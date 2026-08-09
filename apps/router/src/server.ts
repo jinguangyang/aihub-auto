@@ -1,5 +1,7 @@
 import { AIHubApiError, type AIHubClient, type ExcludeReason } from "@aihub-auto/core";
 import { join } from "node:path";
+import { AccountSwitchBusyError } from "./account-errors.ts";
+import type { AccountSwitchService } from "./account-switch.ts";
 import {
 	ConfigSchema,
 	OutboundProxyConfigSchema,
@@ -34,6 +36,7 @@ export interface ServerDeps {
 	state: AppState;
 	credentials: Credentials;
 	client: AIHubClient;
+	accountSwitcher: AccountSwitchService;
 	daemon: RouteDaemon;
 	executor: RouteExecutor;
 	proxyDeps: ProxyDeps;
@@ -728,40 +731,23 @@ export async function handleControl(
 		} catch {
 			return json({ error: "非法 JSON" }, 400);
 		}
-		const previousCredentials = { ...deps.credentials };
 		try {
-			if (body.token) {
-				deps.credentials.accessToken = body.token.trim();
-				deps.credentials.refreshToken = undefined;
-				deps.credentials.expiresAt = undefined;
-			} else if (body.email && body.password) {
-				const session = await deps.client.login(body.email, body.password);
-				deps.credentials.accessToken = session.accessToken;
-				deps.credentials.refreshToken = session.refreshToken;
-				deps.credentials.expiresAt = session.expiresAt;
-			} else {
-				return json({ error: "需要 email+password 或 token" }, 400);
-			}
-			// 登录后立刻验证身份;只有验证成功才覆盖持久化凭据和 Sentry user。
-			const me = await deps.client.me();
-			const value = typeof me["email"] === "string" ? me["email"].trim() : "";
-			const fallback = body.email?.trim() ?? "";
-			const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-				? value
-				: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fallback)
-					? fallback
-					: undefined;
-			deps.credentials.email = email;
-			await deps.persistCredentials();
-			deps.syncSentryUser(email);
-			deps.daemon.needsReauth = false;
-			return json({ ok: true });
+			const input =
+				typeof body.token === "string"
+					? { token: body.token }
+					: typeof body.email === "string" &&
+							typeof body.password === "string"
+						? { email: body.email, password: body.password }
+						: undefined;
+			if (!input) return json({ error: "需要 email+password 或 token" }, 400);
+			return json(await deps.accountSwitcher.login(input));
 		} catch (err) {
-			for (const key of Object.keys(deps.credentials)) {
-				delete deps.credentials[key as keyof Credentials];
+			if (err instanceof AccountSwitchBusyError) {
+				return json(
+					{ code: "ACCOUNT_SWITCH_BUSY", error: err.message },
+					409,
+				);
 			}
-			Object.assign(deps.credentials, previousCredentials);
-			deps.syncSentryUser(previousCredentials.email);
 			return json(
 				{ error: err instanceof Error ? err.message : "登录失败" },
 				400,

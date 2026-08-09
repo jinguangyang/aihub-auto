@@ -822,6 +822,7 @@ describe("控制台 API", () => {
 		expect(ui).toContain("saveUpdateMirrors");
 		expect(ui).toContain("账户余额");
 		expect(ui).toContain("/ctl/account");
+		expect(ui).toContain("客户端 API Key 无需修改");
 		expect(ui).toContain("outboundProxyMode");
 		expect(ui).toContain("saveOutboundProxy");
 		expect(ui).toContain('id="testOutboundProxy"');
@@ -952,18 +953,44 @@ describe("控制台 API", () => {
 		)) as { email: string | null; balance: number | null };
 		expect(account).toEqual({ email: "mock@test.local", balance: 12.34 });
 
+		// 账号切换必须先拒绝在飞流量,旧凭据保持不变。
+		const oldAccessToken = h.credentials.accessToken;
+		h.traffic.begin(1);
+		const busyLoginRes = await fetch(`${base}/ctl/login`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ token: "account-two-token" }),
+		});
+		expect(busyLoginRes.status).toBe(409);
+		expect(await busyLoginRes.json()).toMatchObject({
+			code: "ACCOUNT_SWITCH_BUSY",
+		});
+		expect(h.credentials.accessToken).toBe(oldAccessToken);
+		h.traffic.end(1);
+
 		// 直接 token 登录属于新身份边界,不得沿用上一个账号的 refresh token。
+		const originalProxyToken = h.config.proxyToken;
+		const oldSk = h.state.pool["1"]!.sk;
+		h.affinity.bind("old-session", 1);
 		h.credentials.refreshToken = "stale-account-refresh";
 		const tokenLoginRes = await fetch(`${base}/ctl/login`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ token: "manual-token" }),
+			body: JSON.stringify({ token: "account-two-token" }),
 		});
 		expect(tokenLoginRes.status).toBe(200);
-		expect(h.credentials.accessToken).toBe("manual-token");
+		expect(await tokenLoginRes.json()).toMatchObject({
+			ok: true,
+			switched: true,
+			email: "second@test.local",
+		});
+		expect(h.credentials.accessToken).toBe("account-two-token");
 		expect(h.credentials.refreshToken).toBeUndefined();
 		expect(h.credentials.expiresAt).toBeUndefined();
-		expect(h.credentials.email).toBe("mock@test.local");
+		expect(h.credentials.email).toBe("second@test.local");
+		expect(h.affinity.resolve("old-session")).toBeUndefined();
+		expect(Object.values(h.state.pool).every((entry) => entry.sk !== oldSk)).toBe(true);
+		expect(h.config.proxyToken).toBe(originalProxyToken);
 	});
 
 	test("CC Switch usage endpoint requires proxy auth and returns balance", async () => {

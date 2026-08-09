@@ -6,6 +6,7 @@ import {
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AccountSwitchService } from "../src/account-switch.ts";
 import {
 	ConfigSchema,
 	FileStore,
@@ -31,6 +32,7 @@ export interface Harness {
 	client: AIHubClient;
 	executor: RouteExecutor;
 	daemon: RouteDaemon;
+	accountSwitcher: AccountSwitchService;
 	breaker: CircuitBreaker;
 	observations: LocalObservationStore;
 	affinity: SessionAffinity;
@@ -145,6 +147,19 @@ export function createHarness(opts?: {
 		persistStateSoon: () => {},
 		persistCredentials,
 	});
+	const accountSwitcher = new AccountSwitchService({
+		client,
+		createClient: (accessToken) =>
+			new AIHubClient({ baseUrl: mock.url, token: () => accessToken }),
+		state,
+		credentials,
+		executor,
+		daemon,
+		logger,
+		persistState,
+		persistCredentials,
+		syncSentryUser: () => {},
+	});
 
 	const proxyDeps: ProxyDeps = {
 		baseUrl: mock.url,
@@ -175,6 +190,7 @@ export function createHarness(opts?: {
 			state,
 			credentials,
 			client,
+			accountSwitcher,
 			daemon,
 			executor,
 			proxyDeps,
@@ -202,6 +218,7 @@ export function createHarness(opts?: {
 		client,
 		executor,
 		daemon,
+		accountSwitcher,
 		breaker,
 		observations,
 		affinity,

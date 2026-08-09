@@ -14,6 +14,7 @@ import {
 	SentryDsnSchema,
 	validateListenSecurity,
 } from "./config.ts";
+import { AccountSwitchService } from "./account-switch.ts";
 import { RouteDaemon } from "./daemon.ts";
 import { RouteExecutor } from "./executor.ts";
 import { AuditLog, CrashLog, Logger, RollingFileLog } from "./logger.ts";
@@ -118,11 +119,13 @@ async function main(): Promise<void> {
 	}
 
 	const fetchUpstream = createOutboundFetch(config);
-	const client = new AIHubClient({
-		baseUrl: config.baseUrl,
-		token: () => credentials.accessToken,
-		fetch: fetchUpstream,
-	});
+	const createAIHubClient = (token: () => string | undefined) =>
+		new AIHubClient({
+			baseUrl: config.baseUrl,
+			token,
+			fetch: fetchUpstream,
+		});
+	const client = createAIHubClient(() => credentials.accessToken);
 
 	const breaker = CircuitBreaker.fromJSON(state.breaker);
 	const observations = LocalObservationStore.fromJSON(state.observations);
@@ -244,6 +247,18 @@ async function main(): Promise<void> {
 		persistStateSoon,
 		persistCredentials,
 	});
+	const accountSwitcher = new AccountSwitchService({
+		client,
+		createClient: (accessToken) => createAIHubClient(() => accessToken),
+		state,
+		credentials,
+		executor,
+		daemon,
+		logger,
+		persistState,
+		persistCredentials,
+		syncSentryUser,
+	});
 
 	const proxyDeps: ProxyDeps = {
 		baseUrl: config.baseUrl,
@@ -274,6 +289,7 @@ async function main(): Promise<void> {
 			state,
 			credentials,
 			client,
+			accountSwitcher,
 			daemon,
 			executor,
 			proxyDeps,

@@ -1086,6 +1086,15 @@ describe("控制台 API", () => {
 		expect(html).toContain("10_000");
 		expect(html).toContain("visibilitychange");
 		expect(html).not.toContain("proxy-token-123456");
+		expect(html).toContain('id="uiAuthSessionRow"');
+		expect(html).toContain('id="forgetUiAuth"');
+		expect(html).toContain("验证后 7 天内免输控制台口令");
+		expect(html).toContain("let uiAuthPromise;");
+		expect(html).toContain('body.code==="UI_AUTH_REQUIRED"');
+		expect(html).toContain('fetch("/ctl/auth"');
+		expect(html).toContain('credentials:"same-origin"');
+		expect(html).not.toContain('let uiPass=""');
+		expect(html).not.toContain("aihub-auto-pass");
 
 		const ctl = await fetch(`${base}/ctl/status`, {
 			headers: { "x-ui-password": "console-pass-123" },

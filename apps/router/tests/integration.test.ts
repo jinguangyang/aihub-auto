@@ -983,9 +983,48 @@ describe("控制台 API", () => {
 			},
 		});
 		const base = h.serverUrl!;
-		expect((await fetch(`${base}/ctl/status`)).status).toBe(401);
+		const unauthorized = await fetch(`${base}/ctl/status`);
+		expect(unauthorized.status).toBe(401);
+		expect(await unauthorized.json()).toEqual({
+			code: "UI_AUTH_REQUIRED",
+			error: "需要控制台口令",
+		});
 		expect((await fetch(`${base}/ctl/logs`)).status).toBe(401);
 		expect((await fetch(`${base}/ctl/proxy-token`)).status).toBe(401);
+
+		const invalidAuth = await fetch(`${base}/ctl/auth`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ password: "wrong-password" }),
+		});
+		expect(invalidAuth.status).toBe(401);
+		expect(invalidAuth.headers.get("set-cookie")).toBeNull();
+
+		const auth = await fetch(`${base}/ctl/auth`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ password: "console-pass-123" }),
+		});
+		expect(auth.status).toBe(200);
+		expect(await auth.clone().json()).toMatchObject({ ok: true });
+		const setCookie = auth.headers.get("set-cookie")!;
+		expect(setCookie).toContain("Max-Age=604800");
+		expect(setCookie).toContain("HttpOnly");
+		const cookie = setCookie.split(";", 1)[0]!;
+		expect(
+			(
+				await fetch(`${base}/ctl/status`, {
+					headers: { Cookie: cookie },
+				})
+			).status,
+		).toBe(200);
+
+		const cleared = await fetch(`${base}/ctl/auth`, {
+			method: "DELETE",
+			headers: { Cookie: cookie },
+		});
+		expect(cleared.status).toBe(200);
+		expect(cleared.headers.get("set-cookie")).toContain("Max-Age=0");
 		expect(
 			(
 				await fetch(`${base}/ctl/status`, {
@@ -1052,6 +1091,17 @@ describe("控制台 API", () => {
 			headers: { "x-ui-password": "console-pass-123" },
 		});
 		expect(ctl.headers.get("cache-control")).toBe("no-store");
+
+		h.credentials.accessToken = "expired-token";
+		h.mock.expireToken = true;
+		const accountFailure = await fetch(`${base}/ctl/account`, {
+			headers: { Cookie: cookie },
+		});
+		expect(accountFailure.status).toBe(401);
+		expect(await accountFailure.json()).toEqual({
+			code: "AIHUB_REAUTH_REQUIRED",
+			error: "读取 AIHub 账户信息失败",
+		});
 	});
 });
 

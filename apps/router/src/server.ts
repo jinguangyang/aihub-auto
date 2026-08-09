@@ -19,6 +19,12 @@ import { redact, type Logger } from "./logger.ts";
 import { captureRouterException } from "./sentry.ts";
 import { renderUi } from "./ui.ts";
 import {
+	clearUiSessionCookie,
+	issueUiSession,
+	safeSecretEqual,
+	uiControlAuthorized,
+} from "./ui-auth.ts";
+import {
 	OutboundProxyProbeError,
 	type OutboundProxySettings,
 } from "./outbound-proxy.ts";
@@ -172,16 +178,52 @@ const MANUAL_LOCK_OVERRIDE_REASONS = new Set<ExcludeReason>([
 	"economy_too_slow",
 ]);
 
-/** /ctl 鉴权:配置了 uiPassword 则必须携带(常数时间比较防时序侧信道) */
-function ctlAuthorized(req: Request, config: AppConfig): boolean {
-	if (!config.uiPassword) return true;
-	const given = req.headers.get("x-ui-password") ?? "";
-	const want = config.uiPassword;
-	if (given.length !== want.length) return false;
-	let diff = 0;
-	for (let i = 0; i < want.length; i++)
-		diff |= given.charCodeAt(i) ^ want.charCodeAt(i);
-	return diff === 0;
+function secureUiCookie(config: AppConfig): boolean {
+	return config.publicOrigin.startsWith("https://");
+}
+
+function uiAuthRequired(): Response {
+	return json({ code: "UI_AUTH_REQUIRED", error: "需要控制台口令" }, 401);
+}
+
+async function handleUiAuth(req: Request, deps: ServerDeps): Promise<Response> {
+	const secure = secureUiCookie(deps.config);
+	if (req.method === "DELETE") {
+		const response = json({ ok: true });
+		response.headers.set("Set-Cookie", clearUiSessionCookie(secure));
+		return response;
+	}
+	if (req.method !== "POST") {
+		const response = json({ error: "仅支持 POST 或 DELETE" }, 405);
+		response.headers.set("Allow", "POST, DELETE");
+		return response;
+	}
+	let body: unknown;
+	try {
+		body = await req.json();
+	} catch {
+		return json({ error: "非法 JSON" }, 400);
+	}
+	if (!deps.config.uiPassword) return json({ ok: true, expiresAt: null });
+	if (
+		typeof body !== "object" ||
+		body === null ||
+		Array.isArray(body) ||
+		Object.keys(body).some((key) => key !== "password")
+	) {
+		return json({ error: "认证请求只能包含 password" }, 400);
+	}
+	const password = (body as Record<string, unknown>)["password"];
+	if (
+		typeof password !== "string" ||
+		!safeSecretEqual(password, deps.config.uiPassword)
+	) {
+		return uiAuthRequired();
+	}
+	const session = issueUiSession(deps.config.uiPassword, secure);
+	const response = json({ ok: true, expiresAt: session.expiresAt });
+	response.headers.set("Set-Cookie", session.setCookie);
+	return response;
 }
 
 const MAX_LOG_BYTES = 512 * 1024;
@@ -202,9 +244,8 @@ export async function handleControl(
 	url: URL,
 	deps: ServerDeps,
 ): Promise<Response> {
-	if (!ctlAuthorized(req, deps.config)) {
-		return json({ error: "需要控制台口令(x-ui-password)" }, 401);
-	}
+	if (!uiControlAuthorized(req, deps.config.uiPassword))
+		return uiAuthRequired();
 	const path = url.pathname;
 
 	if (path === "/ctl/logs" && req.method === "GET") {
@@ -229,7 +270,12 @@ export async function handleControl(
 			});
 		} catch (error) {
 			return json(
-				{ error: "读取 AIHub 账户信息失败" },
+				error instanceof AIHubApiError && error.status === 401
+					? {
+							code: "AIHUB_REAUTH_REQUIRED",
+							error: "读取 AIHub 账户信息失败",
+						}
+					: { error: "读取 AIHub 账户信息失败" },
 				error instanceof AIHubApiError && error.status === 401 ? 401 : 502,
 			);
 		}
@@ -766,6 +812,9 @@ export function createServer(deps: ServerDeps): ReturnType<typeof Bun.serve> {
 
 			if (path === "/" || path === "/ui" || path === "/ui/") {
 				return uiResponse(deps.sentryDsn);
+			}
+			if (path === "/ctl/auth") {
+				return handleUiAuth(req, deps);
 			}
 			if (path.startsWith("/ctl/")) {
 				return handleControl(req, url, deps);

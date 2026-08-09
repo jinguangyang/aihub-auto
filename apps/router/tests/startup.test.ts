@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigSchema } from "../src/config.ts";
+import { ConfigSchema, StateSchema, type Credentials } from "../src/config.ts";
+import { alignAccountStateOwner } from "../src/account-state.ts";
 import {
 	applyStartupOptions,
 	parseStartupOptions,
@@ -57,5 +58,25 @@ describe("startup options", () => {
 
 	test("rejects console passwords shorter than 9 characters", () => {
 		expect(() => ConfigSchema.parse({ uiPassword: "12345678" })).toThrow();
+	});
+
+	test("verified startup identity clears state owned by another account", () => {
+		const state = StateSchema.parse({
+			accountIdentity: "id:old-account",
+			pool: { "1": { keyId: 1, sk: "sk-old", lastUsedAt: 1 } },
+		});
+		const credentials: Credentials = {
+			accessToken: "new-token",
+			accountIdentity: "id:old-account",
+		};
+
+		const result = alignAccountStateOwner(state, credentials, {
+			id: "new-account",
+			email: "new@example.com",
+		});
+
+		expect(result.reset).toBe(true);
+		expect(state.pool).toEqual({});
+		expect(state.accountIdentity).toBe("id:new-account");
 	});
 });

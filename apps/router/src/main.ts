@@ -14,6 +14,7 @@ import {
 	SentryDsnSchema,
 	validateListenSecurity,
 } from "./config.ts";
+import { alignAccountStateOwner } from "./account-state.ts";
 import { AccountSwitchService } from "./account-switch.ts";
 import { RouteDaemon } from "./daemon.ts";
 import { RouteExecutor } from "./executor.ts";
@@ -165,15 +166,15 @@ async function main(): Promise<void> {
 		}
 		try {
 			const me = await client.me();
-			const value = typeof me["email"] === "string" ? me["email"].trim() : "";
-			const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-				? value
-				: undefined;
-			if (credentials.email !== email) {
-				credentials.email = email;
-				await persistCredentials();
+			const ownership = alignAccountStateOwner(state, credentials, me);
+			if (ownership.reset) {
+				logger.warn(
+					"检测到 AIHub 账号状态归属变化，已清空旧账号本地 Key 与会话",
+				);
 			}
-			syncSentryUser(email);
+			await persistCredentials();
+			await persistState();
+			syncSentryUser(credentials.email);
 		} catch (error) {
 			if (error instanceof AIHubApiError && error.status === 401) {
 				await clearSentryIdentity();

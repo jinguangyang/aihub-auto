@@ -149,6 +149,7 @@ const UI_TEMPLATE = `<!doctype html>
 const $=selector=>document.querySelector(selector);
 const $$=selector=>[...document.querySelectorAll(selector)];
 let uiAuthPromise;
+let uiAuthGeneration=0;
 let lastStatus;
 let sentryReady;
 const GUIDE_DISMISSED_KEY="aihub-auto.guide-dismissed";
@@ -180,8 +181,8 @@ function toast(message){const node=$("#toast");node.textContent=message;node.cla
 function loadGuideDismissed(){try{return localStorage.getItem(GUIDE_DISMISSED_KEY)==="1"}catch{return false}}
 function setGuideDismissed(value){guideDismissed=value;try{value?localStorage.setItem(GUIDE_DISMISSED_KEY,"1"):localStorage.removeItem(GUIDE_DISMISSED_KEY)}catch{}}
 async function readJson(response){try{return await response.json()}catch{return {error:String(response.status)}}}
-async function authenticateUi(){const password=prompt("控制台口令:");if(password==null)throw new Error("需要控制台口令");const response=await fetch("/ctl/auth",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({password})});const body=await readJson(response);if(!response.ok)throw new Error(body.error||"控制台口令错误")}
-async function api(path,opts,retried=false){const response=await fetch(path,Object.assign({headers:hdrs(),credentials:"same-origin"},opts));const body=await readJson(response);if(response.status===401&&body.code==="UI_AUTH_REQUIRED"&&!retried){hideProxyToken();if(!uiAuthPromise)uiAuthPromise=authenticateUi().finally(()=>{uiAuthPromise=undefined});await uiAuthPromise;return api(path,opts,true)}if(!response.ok)throw new Error(body.error||String(response.status));return body}
+async function authenticateUi(){const password=prompt("控制台口令:");if(password==null)throw new Error("需要控制台口令");const response=await fetch("/ctl/auth",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({password})});const body=await readJson(response);if(!response.ok)throw new Error(body.error||"控制台口令错误");uiAuthGeneration++}
+async function api(path,opts,retried=false){const generation=uiAuthGeneration;const response=await fetch(path,Object.assign({headers:hdrs(),credentials:"same-origin"},opts));const body=await readJson(response);if(response.status===401&&body.code==="UI_AUTH_REQUIRED"&&!retried){if(generation!==uiAuthGeneration)return api(path,opts,true);hideProxyToken();if(!uiAuthPromise)uiAuthPromise=authenticateUi().finally(()=>{uiAuthPromise=undefined});await uiAuthPromise;return api(path,opts,true)}if(!response.ok)throw new Error(body.error||String(response.status));return body}
 async function forgetUiAuth(){const response=await fetch("/ctl/auth",{method:"DELETE",credentials:"same-origin"});if(!response.ok)throw new Error("清除免密登录失败");hideProxyToken();toast("免密登录已清除；下次请求需要重新验证")}
 function fmtScore(value){return typeof value==="number"&&Number.isFinite(value)?value.toFixed(3):"-"}
 function fmtDuration(ms){if(ms==null)return "-";if(ms<60000)return Math.max(0,Math.round(ms/1000))+" 秒";if(ms<3600000)return Math.round(ms/60000)+" 分钟";return Math.round(ms/3600000)+" 小时"}

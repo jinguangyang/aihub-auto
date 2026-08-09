@@ -1090,6 +1090,8 @@ describe("控制台 API", () => {
 		expect(html).toContain('id="forgetUiAuth"');
 		expect(html).toContain("验证后 7 天内免输控制台口令");
 		expect(html).toContain("let uiAuthPromise;");
+		expect(html).toContain("let uiAuthGeneration=0;");
+		expect(html).toContain("generation!==uiAuthGeneration");
 		expect(html).toContain('body.code==="UI_AUTH_REQUIRED"');
 		expect(html).toContain('fetch("/ctl/auth"');
 		expect(html).toContain('credentials:"same-origin"');

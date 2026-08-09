@@ -17,6 +17,8 @@ export OPENAI_API_KEY="anything"          # 本地代理自动注入真实 Key,�
 
 之后一切照旧——代理在幕后持续选择最优分组。
 
+客户端 API Key 和 AIHub 上游 Key 是两层凭据。客户端始终使用路由器的 `proxyToken`；仅监听本机且未配置 `proxyToken` 时可填写任意非空占位值。不要把 AIHub 账号内部生成的 `sk` 填给客户端。在控制台登录另一个 AIHub 账号后，路由器会删除本实例记录的旧账号托管 Key、清空旧会话和 single Key 凭据，再为新账号按需创建 Key。客户端 Base URL 与 API Key 不变，不需要重启；若仍有模型请求运行，切换会返回 `409` 并提示稍后重试。
+
 ## CC Switch 余额查询
 
 公网实例在 CC Switch 的 Codex 供应商中填写：

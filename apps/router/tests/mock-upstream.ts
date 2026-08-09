@@ -5,6 +5,7 @@ export interface MockKey {
 	name: string;
 	key: string;
 	group_id: number | null;
+	ownerId?: string;
 }
 
 export interface MockBehavior {
@@ -44,6 +45,15 @@ export class MockAIHub {
 	refreshCalls = 0;
 	/** 强制业务接口返回 401(模拟 token 过期);refresh 后復位 */
 	expireToken = false;
+	accounts = new Map([
+		["mock-at", { id: "account-1", email: "mock@test.local" }],
+		["mock-at-2", { id: "account-1", email: "mock@test.local" }],
+		["manual-token", { id: "account-1", email: "mock@test.local" }],
+		[
+			"account-two-token",
+			{ id: "account-2", email: "second@test.local" },
+		],
+	]);
 
 	constructor() {
 		this.server = Bun.serve({
@@ -71,6 +81,16 @@ export class MockAIHub {
 
 	private envelope(data: unknown): Response {
 		return this.json({ code: 0, message: "success", data });
+	}
+
+	private accountFor(
+		auth?: string,
+	): { id: string; email: string } | undefined {
+		return this.accounts.get((auth ?? "").replace(/^Bearer\s+/i, ""));
+	}
+
+	private keyOwner(key: MockKey): string {
+		return key.ownerId ?? "account-1";
 	}
 
 	private async handle(req: Request): Promise<Response> {
@@ -134,12 +154,17 @@ export class MockAIHub {
 		if (path === "/api/v1/auth/me") {
 			if (this.expireToken)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
-			return this.envelope({ email: "mock@test.local", balance: 12.34 });
+			const account = this.accountFor(auth);
+			if (!account)
+				return this.json({ code: 1, message: "unauthorized" }, 401);
+			return this.envelope({ ...account, balance: 12.34 });
 		}
 
 		// ---- 账号可用组/倍率 ----
 		if (path === "/api/v1/groups/available") {
 			if (this.expireToken)
+				return this.json({ code: 1, message: "unauthorized" }, 401);
+			if (!this.accountFor(auth))
 				return this.json({ code: 1, message: "unauthorized" }, 401);
 			const groups = [
 				...new Map(this.stats.map((stat) => [stat.groupId, stat])).values(),
@@ -154,6 +179,8 @@ export class MockAIHub {
 		if (path === "/api/v1/groups/rates") {
 			if (this.expireToken)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
+			if (!this.accountFor(auth))
+				return this.json({ code: 1, message: "unauthorized" }, 401);
 			return this.envelope(
 				Object.fromEntries(
 					this.stats.map((stat) => [stat.groupId, stat.rateMultiplier]),
@@ -165,11 +192,19 @@ export class MockAIHub {
 		if (path === "/api/v1/keys" && req.method === "GET") {
 			if (this.expireToken)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
-			const items = [...this.keys.values()];
+			const account = this.accountFor(auth);
+			if (!account)
+				return this.json({ code: 1, message: "unauthorized" }, 401);
+			const items = [...this.keys.values()].filter(
+				(key) => this.keyOwner(key) === account.id,
+			);
 			return this.envelope({ items, total: items.length, pages: 1 });
 		}
 		if (path === "/api/v1/keys" && req.method === "POST") {
 			if (this.expireToken)
+				return this.json({ code: 1, message: "unauthorized" }, 401);
+			const account = this.accountFor(auth);
+			if (!account)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
 			const body = (await req.json()) as { name: string; group_id: number };
 			const id = this.nextKeyId++;
@@ -178,6 +213,7 @@ export class MockAIHub {
 				name: body.name,
 				key: `sk-mock-${id}`,
 				group_id: body.group_id,
+				ownerId: account.id,
 			};
 			this.keys.set(id, key);
 			return this.envelope(key);
@@ -186,9 +222,13 @@ export class MockAIHub {
 		if (keyMatch) {
 			if (this.expireToken)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
+			const account = this.accountFor(auth);
+			if (!account)
+				return this.json({ code: 1, message: "unauthorized" }, 401);
 			const id = Number(keyMatch[1]);
 			const key = this.keys.get(id);
-			if (!key) return this.json({ code: 1, message: "not found" }, 404);
+			if (!key || this.keyOwner(key) !== account.id)
+				return this.json({ code: 1, message: "not found" }, 404);
 			if (req.method === "PUT") {
 				const body = (await req.json()) as { group_id: number };
 				key.group_id = body.group_id;

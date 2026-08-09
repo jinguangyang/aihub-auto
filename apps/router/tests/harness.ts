@@ -36,6 +36,9 @@ export interface Harness {
 	affinity: SessionAffinity;
 	traffic: TrafficTracker;
 	proxyDeps: ProxyDeps;
+	logger: Logger;
+	persistState: () => Promise<void>;
+	persistCredentials: () => Promise<void>;
 	server?: ReturnType<typeof createServer>;
 	serverUrl?: string;
 	configDir: string;
@@ -57,11 +60,18 @@ export function createHarness(opts?: {
 		pollIntervalMs: 60_000,
 		...opts?.configPatch,
 	});
-	const state = StateSchema.parse({});
+	const loggedIn = opts?.loggedIn !== false;
+	const state = StateSchema.parse(
+		loggedIn ? { accountIdentity: "id:account-1" } : {},
+	);
 	const credentials: Credentials =
-		opts?.loggedIn === false
+		!loggedIn
 			? {}
-			: { accessToken: "mock-at", refreshToken: "mock-rt" };
+			: {
+					accessToken: "mock-at",
+					refreshToken: "mock-rt",
+					accountIdentity: "id:account-1",
+				};
 
 	const logger = new Logger("error", () => {});
 	const audit = new AuditLog(undefined);
@@ -197,6 +207,9 @@ export function createHarness(opts?: {
 		affinity,
 		traffic,
 		proxyDeps,
+		logger,
+		persistState,
+		persistCredentials,
 		server,
 		serverUrl,
 		configDir: dir,

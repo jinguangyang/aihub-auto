@@ -28,6 +28,8 @@ API Key:  router config.json 中的 proxyToken
 
 这里的 API Key 是中转入口口令，不是控制台 `uiPassword`，也不是 AIHub 原始 Key。控制台的“连接参数”可在输入 `uiPassword` 后点击小眼睛临时查看 `proxyToken`，明文会在 10 秒后自动隐藏。
 
+输入正确的 `uiPassword` 后，浏览器会获得仅用于 `/ctl` 的 7 天免密会话；会话到期、在设置页清除免密登录或修改 `uiPassword` 后需要重新验证。控制台口令不会写入 `localStorage` 或 `sessionStorage`，旧的 `x-ui-password` Header 仍可供脚本调用。
+
 在该供应商的“用量查询”中启用自定义模板。查询专用 Base URL 和 API Key 留空以复用供应商配置，并使用：
 
 ```javascript
@@ -140,6 +142,7 @@ Linux x64 发行包采用 Bun 的 `bun-linux-x64-baseline` 目标，支持不具
 ## 安全边界
 
 - 默认仅监听 127.0.0.1,凭据仅存本机(POSIX 下 0600),日志脱敏;`/ctl/status` 只返回 Key 元数据,不返回 `sk`
+- 控制台口令验证成功后签发 7 天有效、`HttpOnly`、`SameSite=Strict` 且仅限 `/ctl` 的签名 Cookie；修改 `uiPassword` 会使已有会话失效
 - 配置目录内 `app.log` 默认记录运行日志(5 MiB × 当前+3 个历史),`crash.log` 记录生命周期和未处理异常(1 MiB × 当前+3 个历史)。控制台日志页通过受 `uiPassword` 保护的 `/ctl/logs` 最多读取 1000 行/512 KiB，并在返回前再次脱敏。直接双击 Windows EXE 使用 `%LocalAppData%\\aihub-auto`;通过 `AIHUB_AUTO_CONFIG_DIR` 可显式指定其他目录
 - 监听 `0.0.0.0` 时强制要求 `proxyToken` + `uiPassword`,否则拒绝启动(防止别人烧你的额度);客户端此时用 `OPENAI_API_KEY=<proxyToken>` 访问
 - 无 TLS:公网部署建议前置反代(Caddy/Nginx)或仅在可信内网使用;反向代理需保留原始 Host,并将 `publicOrigin` 设置为唯一对外 HTTPS origin

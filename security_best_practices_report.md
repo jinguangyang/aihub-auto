@@ -83,17 +83,21 @@ client-supplied forwarded headers are not trusted.
 - Rule ID: AAH-SEC-002 / JS-STORAGE-001
 - Severity: Medium
 - Status: Fixed
-- Location: `apps/router/src/ui.ts:70` and `apps/router/src/ui.ts:77`
+- Location: `apps/router/src/ui-auth.ts`, `apps/router/src/server.ts`, and
+  `apps/router/src/ui.ts`
 - Evidence: `origin/main` loaded and saved `aihub-auto-pass` through
-  `localStorage`. The fixed UI initializes `let uiPass=""` and retains a
-  prompted value only in the current page closure. The final HTML contains no
-  `localStorage` or `sessionStorage` reference.
+  `localStorage`. The fixed UI exchanges a prompted value once at `/ctl/auth`
+  and contains no console-password storage key. Its remaining `localStorage`
+  use retains only the non-sensitive dismissed state of the first-run guide.
 - Impact: Any same-origin script execution, browser extension with page access,
   or later console XSS could recover a long-lived control password. Persistence
   also left the password available after the operator closed and reopened the
   console.
-- Fix: Keep the password in JavaScript memory only. A reload requires the
-  operator to enter it again.
+- Fix: Exchange the password for a seven-day signed `HttpOnly`,
+  `SameSite=Strict`, `/ctl`-scoped cookie. The password and cookie value remain
+  unavailable to page JavaScript and are never stored in Web Storage. The
+  signed expiry is checked server-side, and changing `uiPassword` invalidates
+  existing sessions.
 - Mitigation: Use a unique `uiPassword`, serve network deployments behind TLS,
   and keep the nonce CSP enabled.
 - False positive notes: Web Storage is origin-scoped, but it is readable by all

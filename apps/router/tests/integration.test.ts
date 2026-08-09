@@ -662,6 +662,91 @@ describe("账号切换并发边界", () => {
 	});
 });
 
+describe("AIHub 账号热切换", () => {
+	test("two-account API smoke keeps the client proxy token", async () => {
+		const clientProxyToken = "stable-client-token";
+		h = createHarness({
+			withServer: true,
+			configPatch: { keyMode: "pool", proxyToken: clientProxyToken },
+		});
+		h.mock.stats = [makeStat({ groupId: 1 })];
+		const base = h.serverUrl!;
+		const routeModel = () =>
+			fetch(`${base}/v1/chat/completions`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${clientProxyToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					model: "smoke-model",
+					messages: [{ role: "user", content: "ping" }],
+				}),
+			});
+
+		expect(
+			await fetch(`${base}/ctl/proxy-token`).then((response) => response.json()),
+		).toEqual({ proxyToken: clientProxyToken });
+		const firstResponse = await routeModel();
+		expect(firstResponse.status).toBe(200);
+		await firstResponse.text();
+		const firstAuth = h.mock.requestLog
+			.filter((entry) => entry.path === "/v1/chat/completions")
+			.at(-1)?.auth;
+		const firstSk = firstAuth?.replace(/^Bearer\s+/i, "");
+		const firstKey = [...h.mock.keys.values()].find(
+			(key) => key.key === firstSk,
+		);
+		expect(firstKey?.ownerId).toBe("account-1");
+
+		const switchResponse = await fetch(`${base}/ctl/login`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ token: "account-two-token" }),
+		});
+		expect(switchResponse.status).toBe(200);
+		expect(await switchResponse.json()).toMatchObject({
+			ok: true,
+			switched: true,
+			email: "second@test.local",
+		});
+		expect(h.mock.keys.has(firstKey!.id)).toBe(false);
+		expect(
+			await fetch(`${base}/ctl/account`).then((response) => response.json()),
+		).toEqual({ email: "second@test.local", balance: 12.34 });
+
+		const secondResponse = await routeModel();
+		expect(secondResponse.status).toBe(200);
+		await secondResponse.text();
+		const secondAuth = h.mock.requestLog
+			.filter((entry) => entry.path === "/v1/chat/completions")
+			.at(-1)?.auth;
+		const secondSk = secondAuth?.replace(/^Bearer\s+/i, "");
+		const secondKey = [...h.mock.keys.values()].find(
+			(key) => key.key === secondSk,
+		);
+		expect(secondKey?.ownerId).toBe("account-2");
+		expect(secondSk).not.toBe(firstSk);
+		expect(h.config.proxyToken).toBe(clientProxyToken);
+
+		h.traffic.begin(secondKey!.group_id ?? 1);
+		try {
+			const busyResponse = await fetch(`${base}/ctl/login`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ token: "mock-at" }),
+			});
+			expect(busyResponse.status).toBe(409);
+			expect(await busyResponse.json()).toMatchObject({
+				code: "ACCOUNT_SWITCH_BUSY",
+			});
+			expect(h.credentials.accountIdentity).toBe("id:account-2");
+		} finally {
+			h.traffic.end(secondKey!.group_id ?? 1);
+		}
+	});
+});
+
 describe("控制台 API", () => {
 	test("status/config/route-once/login 全链路", async () => {
 		h = createHarness({

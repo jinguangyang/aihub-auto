@@ -241,4 +241,22 @@ describe("executor 模式 pool", () => {
 		]);
 		expect(Object.keys(h.state.pool)).toHaveLength(0);
 	});
+
+	test("account reset deletes only recorded managed pool keys and clears local entries", async () => {
+		h = poolHarness(2);
+		await h.executor.ensureKey(1);
+		await h.executor.ensureKey(2);
+		h.mock.keys.set(999, {
+			id: 999,
+			name: "manual",
+			key: "sk-manual",
+			group_id: 1,
+		});
+
+		expect(await h.executor.clearManagedKeysForAccountSwitch()).toEqual({
+			orphanedKeyIds: [],
+		});
+		expect(h.state.pool).toEqual({});
+		expect([...h.mock.keys.keys()]).toEqual([999]);
+	});
 });

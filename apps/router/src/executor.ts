@@ -1,5 +1,6 @@
 import type { AIHubClient } from "@aihub-auto/core";
 import { AIHubApiError } from "@aihub-auto/core";
+import { AccountSwitchBusyError } from "./account-errors.ts";
 import type { AppState, Credentials } from "./config.ts";
 import type { Logger } from "./logger.ts";
 
@@ -82,6 +83,33 @@ export class RouteExecutor {
 			() => undefined,
 		);
 		return run;
+	}
+
+	hasAccountActivity(): boolean {
+		return (
+			this.creating.size > 0 ||
+			this.reservations.size > 0 ||
+			(this.deps.hardProtectedGroupIds?.().size ?? 0) > 0
+		);
+	}
+
+	clearManagedKeysForAccountSwitch(): Promise<{ orphanedKeyIds: number[] }> {
+		return this.serializePool(async () => {
+			if (this.hasAccountActivity()) throw new AccountSwitchBusyError();
+			const orphanedKeyIds: number[] = [];
+			for (const [groupId, entry] of Object.entries(this.deps.state.pool)) {
+				try {
+					await this.deps.client.deleteKey(entry.keyId);
+				} catch (error) {
+					orphanedKeyIds.push(entry.keyId);
+					this.deps.logger.warn(
+						`账号切换清理失败，已丢弃本地池记录:keyId=${entry.keyId} ${error instanceof Error ? error.message : ""}`,
+					);
+				}
+				delete this.deps.state.pool[groupId];
+			}
+			return { orphanedKeyIds };
+		});
 	}
 
 	/** 请求面取得指定组 Key。single 模式因上游限制仍会全局切组。 */

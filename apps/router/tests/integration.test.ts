@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { CircuitBreaker, LocalObservationStore } from "@aihub-auto/core";
+import { AccountSwitchBusyError } from "../src/account-errors.ts";
 import { OutboundProxyProbeError } from "../src/outbound-proxy.ts";
 import { handleProxy } from "../src/proxy.ts";
 import { browserRequestProblem } from "../src/server.ts";
@@ -603,6 +604,61 @@ describe("状态持久化与恢复", () => {
 		expect(round.executed).toBe(true);
 		expect(h.mock.refreshCalls).toBe(1);
 		expect(h.state.currentGroupId).toBe(1);
+	});
+});
+
+describe("账号切换并发边界", () => {
+	test("route preparation makes an account mutation busy", async () => {
+		h = createHarness();
+		let enter!: () => void;
+		let release!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			enter = resolve;
+		});
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const originalFetchStats = h.daemon.fetchStats.bind(h.daemon);
+		h.daemon.fetchStats = async (platform) => {
+			enter();
+			await blocked;
+			return originalFetchStats(platform);
+		};
+		const route = h.daemon.route({});
+
+		await entered;
+		let committed = false;
+		await expect(
+			h.daemon.runAccountSwitchMutation(async () => {
+				committed = true;
+			}),
+		).rejects.toBeInstanceOf(AccountSwitchBusyError);
+		expect(committed).toBe(false);
+		release();
+		await route;
+	});
+
+	test("routes receive retryable 503 during an account commit window", async () => {
+		h = createHarness({ withServer: true });
+		let enter!: () => void;
+		let release!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			enter = resolve;
+		});
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const mutation = h.daemon.runAccountSwitchMutation(async () => {
+			enter();
+			await blocked;
+		});
+
+		await entered;
+		const response = await fetch(`${h.serverUrl}/v1/models`);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("retry-after")).toBe("1");
+		release();
+		await mutation;
 	});
 });
 

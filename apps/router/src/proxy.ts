@@ -1,4 +1,5 @@
 import type { LocalObservationStore, Platform } from "@aihub-auto/core";
+import { AccountSwitchingError } from "./account-errors.ts";
 import type { RouteRequest } from "./daemon.ts";
 import type { ActiveKey } from "./executor.ts";
 import type { Logger } from "./logger.ts";
@@ -142,6 +143,12 @@ function errorResponse(status: number, message: string): Response {
 			},
 		},
 	);
+}
+
+function accountSwitchingResponse(error: AccountSwitchingError): Response {
+	const response = errorResponse(503, error.message);
+	response.headers.set("Retry-After", "1");
+	return response;
 }
 
 export function proxyTokenAuthorized(
@@ -422,6 +429,9 @@ async function handleProxyRequest(
 	try {
 		active = await deps.route(context);
 	} catch (err) {
+		if (err instanceof AccountSwitchingError) {
+			return accountSwitchingResponse(err);
+		}
 		deps.logger.error(
 			`路由准备失败:${err instanceof Error ? err.message : String(err)}`,
 		);
@@ -477,6 +487,10 @@ async function handleProxyRequest(
 						failedGroupIds: failedGroups,
 					});
 				} catch (err) {
+					if (err instanceof AccountSwitchingError) {
+						lastError = accountSwitchingResponse(err);
+						break;
+					}
 					deps.logger.warn(
 						`备用路由准备失败:${err instanceof Error ? err.message : String(err)}`,
 					);

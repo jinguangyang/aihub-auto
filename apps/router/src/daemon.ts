@@ -16,6 +16,10 @@ import {
 	mergeProviderLatencies,
 } from "@aihub-auto/core";
 import { randomUUID } from "node:crypto";
+import {
+	AccountSwitchBusyError,
+	AccountSwitchingError,
+} from "./account-errors.ts";
 import type { AppConfig, AppState, Credentials } from "./config.ts";
 import type { ActiveKey, RouteExecutor } from "./executor.ts";
 import type { AuditLog, Logger } from "./logger.ts";
@@ -83,6 +87,8 @@ export class RouteDaemon {
 	>();
 	private singleRoute: Promise<unknown> = Promise.resolve();
 	private controlMutation: Promise<unknown> = Promise.resolve();
+	private accountSwitching = false;
+	private routesPreparing = 0;
 	needsReauth = false;
 	lastRound: RoundResult | undefined;
 
@@ -224,6 +230,30 @@ export class RouteDaemon {
 	/** 与守护轮串行执行其他控制面变更。 */
 	runControlMutation<T>(fn: () => Promise<T>): Promise<T> {
 		return this.serializeControlMutation(fn);
+	}
+
+	runAccountSwitchMutation<T>(fn: () => Promise<T>): Promise<T> {
+		return this.serializeControlMutation(async () => {
+			this.accountSwitching = true;
+			try {
+				if (
+					this.routesPreparing > 0 ||
+					this.deps.traffic.activeGroupIds().size > 0 ||
+					this.deps.executor.hasAccountActivity()
+				) {
+					throw new AccountSwitchBusyError();
+				}
+				return await fn();
+			} finally {
+				this.accountSwitching = false;
+			}
+		});
+	}
+
+	resetAccountCaches(): void {
+		this.allowedGroupIds = undefined;
+		this.userRates = undefined;
+		this.lastRound = undefined;
 	}
 
 	/** 锁 revision、当前配置资格检查与持久化在同一控制事务内完成。 */
@@ -430,25 +460,33 @@ export class RouteDaemon {
 
 	/** 请求本地路由;同一会话的选择/迁移串行化,其他会话互不影响。 */
 	async route(request: RouteRequest): Promise<ActiveKey | undefined> {
-		if (this.deps.config.keyMode === "single") {
-			const pending = this.singleRoute
-				.catch(() => undefined)
-				.then(() => this.routeSingle(request));
-			this.singleRoute = pending;
-			return pending;
-		}
-		if (!request.sessionKey) return this.routePool(request);
-		const previous =
-			this.routeLocks.get(request.sessionKey) ?? Promise.resolve(undefined);
-		const pending = previous
-			.catch(() => undefined)
-			.then(() => this.routePool(request));
-		this.routeLocks.set(request.sessionKey, pending);
-		return pending.finally(() => {
-			if (this.routeLocks.get(request.sessionKey!) === pending) {
-				this.routeLocks.delete(request.sessionKey!);
+		if (this.accountSwitching) throw new AccountSwitchingError();
+		this.routesPreparing++;
+		try {
+			if (this.deps.config.keyMode === "single") {
+				const pending = this.singleRoute
+					.catch(() => undefined)
+					.then(() => this.routeSingle(request));
+				this.singleRoute = pending;
+				return await pending;
 			}
-		});
+			if (!request.sessionKey) return await this.routePool(request);
+			const previous =
+				this.routeLocks.get(request.sessionKey) ?? Promise.resolve(undefined);
+			const pending = previous
+				.catch(() => undefined)
+				.then(() => this.routePool(request));
+			this.routeLocks.set(request.sessionKey, pending);
+			try {
+				return await pending;
+			} finally {
+				if (this.routeLocks.get(request.sessionKey) === pending) {
+					this.routeLocks.delete(request.sessionKey);
+				}
+			}
+		} finally {
+			this.routesPreparing--;
+		}
 	}
 
 	private async routeSingle(

@@ -226,6 +226,7 @@ export const ConfigSchema = z
 export type AppConfig = z.infer<typeof ConfigSchema>;
 
 export const StateSchema = z.object({
+	accountIdentity: z.string().min(1).max(128).optional(),
 	currentGroupId: z.number().int().optional(),
 	/** 控制台手动锁定;revision 防止多个标签页用旧状态覆盖新锁定。 */
 	manualLock: z
@@ -286,6 +287,7 @@ export type AppState = z.infer<typeof StateSchema>;
 
 export const CredentialsSchema = z.object({
 	accessToken: z.string().optional(),
+	accountIdentity: z.string().min(1).max(128).optional(),
 	/** 已验证 AIHub 身份邮箱,仅用于 Sentry user/Feedback 默认邮箱。 */
 	email: z.string().email().optional(),
 	refreshToken: z.string().optional(),

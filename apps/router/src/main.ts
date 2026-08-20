@@ -6,6 +6,7 @@ import {
 } from "@aihub-auto/core";
 import { join } from "node:path";
 import {
+	applyManagedSecretOverrides,
 	configDir,
 	FileStore,
 	loadConfig,
@@ -51,7 +52,15 @@ async function main(): Promise<void> {
 	}
 	const dir = configDir();
 	const store = new FileStore(dir);
-	let config = applyStartupOptions(await loadConfig(store), startup);
+	const persistedConfig = await loadConfig(store);
+	const persistedUiPassword = persistedConfig.uiPassword;
+	const persistedProxyToken = persistedConfig.proxyToken;
+	const managedUiPassword = process.env["AIHUB_AUTO_UI_PASSWORD"]?.trim();
+	const managedProxyToken = process.env["AIHUB_AUTO_PROXY_TOKEN"]?.trim();
+	let config = applyManagedSecretOverrides(
+		applyStartupOptions(persistedConfig, startup),
+		process.env,
+	);
 	// The desktop sidecar must not inherit a standalone LAN bind from config.json.
 	if (process.env["AIHUB_AUTO_DESKTOP"] === "1") {
 		config = { ...config, listen: { ...config.listen, host: "127.0.0.1" } };
@@ -154,7 +163,19 @@ async function main(): Promise<void> {
 		config.sessionMaxEntries,
 		persistStateSoon,
 	);
-	const persistConfig = async () => store.write("config.json", config);
+	const persistConfig = async () => {
+		const next = { ...config };
+		// Keep deployment-managed secrets out of the persisted config file.
+		if (managedUiPassword) {
+			if (persistedUiPassword === undefined) delete next.uiPassword;
+			else next.uiPassword = persistedUiPassword;
+		}
+		if (managedProxyToken) {
+			if (persistedProxyToken === undefined) delete next.proxyToken;
+			else next.proxyToken = persistedProxyToken;
+		}
+		return store.write("config.json", next);
+	};
 	const persistCredentials = async () =>
 		store.write("credentials.json", credentials);
 	const persistAccounts = async () => store.write("accounts.json", accounts);

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigSchema, StateSchema, type Credentials } from "../src/config.ts";
+import {
+	applyManagedSecretOverrides,
+	ConfigSchema,
+	StateSchema,
+	type Credentials,
+} from "../src/config.ts";
 import { alignAccountStateOwner } from "../src/account-state.ts";
 import {
 	applyStartupOptions,
@@ -58,6 +63,21 @@ describe("startup options", () => {
 
 	test("rejects console passwords shorter than 9 characters", () => {
 		expect(() => ConfigSchema.parse({ uiPassword: "12345678" })).toThrow();
+	});
+
+	test("managed secrets override runtime config without mutating the loaded object", () => {
+		const persisted = ConfigSchema.parse({
+			uiPassword: "persisted-console-password",
+			proxyToken: "persisted-proxy-token",
+		});
+		const effective = applyManagedSecretOverrides(persisted, {
+			AIHUB_AUTO_UI_PASSWORD: " managed-console-password ",
+			AIHUB_AUTO_PROXY_TOKEN: " managed-proxy-token ",
+		});
+		expect(effective.uiPassword).toBe("managed-console-password");
+		expect(effective.proxyToken).toBe("managed-proxy-token");
+		expect(persisted.uiPassword).toBe("persisted-console-password");
+		expect(persisted.proxyToken).toBe("persisted-proxy-token");
 	});
 
 	test("verified startup identity clears state owned by another account", () => {

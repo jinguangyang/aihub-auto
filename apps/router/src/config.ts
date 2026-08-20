@@ -237,6 +237,20 @@ export const ConfigSchema = z
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
 
+/** Managed relay deployments may provide secrets without storing them in config.json. */
+export function applyManagedSecretOverrides(
+	config: AppConfig,
+	env: Record<string, string | undefined>,
+): AppConfig {
+	const uiPassword = env["AIHUB_AUTO_UI_PASSWORD"]?.trim();
+	const proxyToken = env["AIHUB_AUTO_PROXY_TOKEN"]?.trim();
+	return ConfigSchema.parse({
+		...config,
+		...(uiPassword ? { uiPassword } : {}),
+		...(proxyToken ? { proxyToken } : {}),
+	});
+}
+
 export const StateSchema = z.object({
 	accountIdentity: z.string().min(1).max(128).optional(),
 	currentGroupId: z.number().int().optional(),

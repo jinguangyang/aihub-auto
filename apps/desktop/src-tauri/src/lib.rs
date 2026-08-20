@@ -26,6 +26,7 @@ use tauri_plugin_updater::UpdaterExt;
 const GITHUB_URL: &str = "https://github.com/WSXYT/aihub-auto";
 const GITHUB_UPDATE_ENDPOINT: &str =
     "https://github.com/WSXYT/aihub-auto/releases/latest/download/latest.json";
+const ROUTER_RESTART_EXIT_CODE: i32 = 75;
 
 struct RouterProcess {
     child: Mutex<Option<CommandChild>>,
@@ -68,6 +69,10 @@ struct UpdateProgress {
 
 fn autostart_requested(args: impl IntoIterator<Item = String>) -> bool {
     args.into_iter().any(|arg| arg == "--autostart")
+}
+
+fn restart_requested(code: Option<i32>) -> bool {
+    code == Some(ROUTER_RESTART_EXIT_CODE)
 }
 
 fn desktop_port() -> u16 {
@@ -314,6 +319,17 @@ fn start_router(app: &AppHandle, show_window: bool) -> Result<(), String> {
                         } else {
                             format!("路由进程启动失败: {detail}")
                         }));
+                    } else if restart_requested(payload.code) {
+                        // A control restart is a requested hand-off. Keep the
+                        // supervisor in its running state while the replacement
+                        // sidecar is started on Tauri's main thread.
+                        router.stopping.store(false, Ordering::Release);
+                        let restart_handle = event_handle.clone();
+                        let _ = event_handle.run_on_main_thread(move || {
+                            if let Err(error) = start_router(&restart_handle, true) {
+                                log::error!("router sidecar restart failed: {error}");
+                            }
+                        });
                     } else if !router.stopping.load(Ordering::Acquire) {
                         let error = format!("本地路由进程意外退出: {payload:?}");
                         let failure_handle = event_handle.clone();
@@ -665,6 +681,13 @@ mod tests {
             "--autostart".to_string()
         ]));
         assert!(!autostart_requested(["app".to_string()]));
+    }
+
+    #[test]
+    fn restart_exit_code_is_requested_only_for_code_75() {
+        assert!(restart_requested(Some(75)));
+        assert!(!restart_requested(Some(0)));
+        assert!(!restart_requested(None));
     }
 
     #[test]

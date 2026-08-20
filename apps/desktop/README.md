@@ -8,6 +8,7 @@ Tauri 2 shell for the existing Bun router. The desktop layer owns native windowi
 - The main window is created only after the sidecar prints its startup marker and `/healthz` returns 200.
 - Closing the window hides it. The tray can show the window, open the live log view, check for updates or exit and stop the sidecar.
 - Startup failure opens the bundled local `dist/index.html` page with the failure reason, port, config directory and restart action.
+- The authenticated router `POST /ctl/restart` returns before shutting down. The standalone router exits with code `75`, which must be handled by a supervisor; this desktop shell automatically respawns its sidecar on that code. Ordinary tray/app shutdown exits with code `0` and is not respawned.
 - The remote capability is limited to the main window and local router origins on ports 8787/8798.
 
 ## Development

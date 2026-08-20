@@ -604,6 +604,10 @@ describe("状态持久化与恢复", () => {
 		expect(round.executed).toBe(true);
 		expect(h.mock.refreshCalls).toBe(1);
 		expect(h.state.currentGroupId).toBe(1);
+		expect(h.accounts.profiles[0]).toMatchObject({
+			accessToken: "mock-at-2",
+			refreshToken: "mock-rt-2",
+		});
 	});
 });
 
@@ -907,6 +911,18 @@ describe("控制台 API", () => {
 		expect(ui).toContain("saveUpdateMirrors");
 		expect(ui).toContain("账户余额");
 		expect(ui).toContain("/ctl/account");
+		expect(ui).toContain('id="accountProfiles"');
+		expect(ui).toContain('id="logoutAccount"');
+		expect(ui).toContain('id="restartService"');
+		expect(ui).toContain("/ctl/accounts/switch");
+		expect(ui).toContain("/ctl/accounts/remove");
+		expect(ui).toContain("/ctl/logout");
+		expect(ui).toContain("/ctl/restart");
+		expect(ui).toContain("async function refreshProfiles()");
+		expect(ui).toContain("void refreshProfiles().catch(error=>");
+		expect(ui).toContain("账户列表刷新失败");
+		expect(ui).toContain("confirm(\"移除已保存账户");
+		expect(ui).toContain("confirm(\"重启本地路由服务");
 		expect(ui).toContain("客户端 API Key 无需修改");
 		expect(ui).toContain("outboundProxyMode");
 		expect(ui).toContain("saveOutboundProxy");
@@ -1078,6 +1094,133 @@ describe("控制台 API", () => {
 		expect(h.config.proxyToken).toBe(originalProxyToken);
 	});
 
+	test("saved-account endpoints redact secrets and support switch, remove, and logout", async () => {
+		h = createHarness({ withServer: true });
+		const base = h.serverUrl!;
+
+		const initialText = await fetch(`${base}/ctl/accounts`).then((response) =>
+			response.text(),
+		);
+		expect(initialText).not.toContain("mock-at");
+		expect(initialText).not.toContain("mock-rt");
+		expect(JSON.parse(initialText)).toMatchObject({
+			activeIdentity: "id:account-1",
+			accounts: [
+				{
+					identity: "id:account-1",
+					email: "mock@test.local",
+					active: true,
+				},
+			],
+		});
+
+		const add = await fetch(`${base}/ctl/login`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ token: "account-two-token" }),
+		});
+		expect(add.status).toBe(200);
+		expect(h.accounts.profiles).toHaveLength(2);
+
+		const switched = await fetch(`${base}/ctl/accounts/switch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ identity: "id:account-1" }),
+		});
+		expect(switched.status).toBe(200);
+		expect(h.accounts.activeIdentity).toBe("id:account-1");
+		expect(h.credentials.accessToken).toBe("mock-at");
+
+		const malformed = await fetch(`${base}/ctl/accounts/switch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ identity: "id:account-2", unexpected: true }),
+		});
+		expect(malformed.status).toBe(400);
+
+		const removed = await fetch(`${base}/ctl/accounts/remove`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ identity: "id:account-2" }),
+		});
+		expect(removed.status).toBe(200);
+		expect(h.accounts.profiles.map((profile) => profile.identity)).toEqual([
+			"id:account-1",
+		]);
+
+		const logout = await fetch(`${base}/ctl/logout`, { method: "POST" });
+		expect(logout.status).toBe(200);
+		expect(h.credentials.accessToken).toBeUndefined();
+		expect(h.accounts.activeIdentity).toBeUndefined();
+		expect(h.accounts.profiles).toHaveLength(1);
+		const afterLogout = await fetch(`${base}/ctl/accounts`).then((response) =>
+			response.json(),
+		);
+		expect(afterLogout).toMatchObject({
+			activeIdentity: null,
+			accounts: [{ identity: "id:account-1", active: false }],
+		});
+	});
+
+	test("restart is delayed, single-flight, and blocked by active traffic", async () => {
+		h = createHarness({ withServer: true });
+		const base = h.serverUrl!;
+		h.traffic.begin(1);
+		try {
+			const blocked = await fetch(`${base}/ctl/restart`, { method: "POST" });
+			expect(blocked.status).toBe(409);
+			expect(await blocked.json()).toMatchObject({ code: "TRAFFIC_ACTIVE" });
+			expect(h.restartRequested.value).toBe(false);
+		} finally {
+			h.traffic.end(1);
+		}
+
+		const accepted = await fetch(`${base}/ctl/restart`, { method: "POST" });
+		expect(accepted.status).toBe(202);
+		expect(await accepted.json()).toEqual({ ok: true, restarting: true });
+		expect(h.restartRequested.value).toBe(false);
+		const duplicate = await fetch(`${base}/ctl/restart`, { method: "POST" });
+		expect(duplicate.status).toBe(409);
+		expect(await duplicate.json()).toMatchObject({ code: "RESTART_PENDING" });
+		await Bun.sleep(70);
+		expect(h.restartRequested.value).toBe(true);
+	});
+
+	test("restart rejects while account mutation is pending", async () => {
+		h = createHarness({ withServer: true });
+		h.mock.meDelayMs = 50;
+		const mutation = h.accountSwitcher.login({ token: "account-two-token" });
+		try {
+			const response = await fetch(`${h.serverUrl}/ctl/restart`, { method: "POST" });
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({ code: "ACCOUNT_SWITCH_BUSY" });
+		} finally {
+			await mutation;
+		}
+	});
+
+	test("account mutations reject while restart is pending", async () => {
+		h = createHarness({ withServer: true });
+		h.restartState.pending = true;
+		const headers = { "Content-Type": "application/json" };
+		for (const [path, body] of [
+			["/ctl/login", { token: "account-two-token" }],
+			["/ctl/accounts/switch", { identity: "id:account-1" }],
+			["/ctl/accounts/remove", { identity: "id:account-1" }],
+		] as const) {
+			const response = await fetch(`${h.serverUrl}${path}`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify(body),
+			});
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({ code: "RESTART_PENDING" });
+		}
+		const logout = await fetch(`${h.serverUrl}/ctl/logout`, { method: "POST" });
+		expect(logout.status).toBe(409);
+		expect(await logout.json()).toMatchObject({ code: "RESTART_PENDING" });
+	});
+
 	test("CC Switch usage endpoint requires proxy auth and returns balance", async () => {
 		h = createHarness({
 			withServer: true,
@@ -1159,6 +1302,13 @@ describe("控制台 API", () => {
 		});
 		expect((await fetch(`${base}/ctl/logs`)).status).toBe(401);
 		expect((await fetch(`${base}/ctl/proxy-token`)).status).toBe(401);
+		expect((await fetch(`${base}/ctl/accounts`)).status).toBe(401);
+		expect(
+			(await fetch(`${base}/ctl/logout`, { method: "POST" })).status,
+		).toBe(401);
+		expect(
+			(await fetch(`${base}/ctl/restart`, { method: "POST" })).status,
+		).toBe(401);
 
 		const invalidAuth = await fetch(`${base}/ctl/auth`, {
 			method: "POST",

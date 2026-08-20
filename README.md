@@ -58,6 +58,10 @@ Windows 和 macOS 桌面应用启动后会检查 GitHub Releases。发现新版�
 
 客户端 API Key 属于路由器这一层：配置了 `proxyToken` 时始终填写它；仅监听本机且未配置时可使用任意非空占位值。不要把 AIHub 账号内部生成的 `sk` 填给客户端。在控制台登录另一个 AIHub 账号后，路由器会清理旧账号的本地自动 Key、single Key 凭据和会话，再为新账号按需创建 Key。客户端 Base URL 与 API Key 保持不变，也不需要重启路由器；仍有模型请求运行时，账号切换会返回提示，稍后重试即可。
 
+控制台会把已验证的账号档案保存到配置目录的 `accounts.json`（密码不会保存）。登录新账号会新增或更新档案；“退出当前账户”只清理运行时凭据、会话和本实例托管 Key，保留档案以便下次一键切换；“移除”才会删除档案。账号列表只返回邮箱、身份摘要和最近使用时间，不返回 access token、refresh token 或上游 `sk`。
+
+设置页的“重启”操作只接受已鉴权的 `POST /ctl/restart`，并在有活动请求或账号变更时拒绝。桌面应用会在 sidecar 以退出码 `75` 结束后自动重新拉起它；standalone 不会自启第二个进程，必须由 systemd、Docker、launchd 或其他 supervisor 将退出码 `75` 配置为重启信号。普通托盘退出和 SIGINT/SIGTERM 仍使用退出码 `0`。
+
 实例配置了 `uiPassword` 时，输入正确口令后浏览器会获得仅用于 `/ctl` 的 7 天免密会话；会话到期、在设置页清除免密登录或修改 `uiPassword` 后需要重新验证。路由器不会把控制台口令写入网页存储。
 
 控制台会分别显示官网真实用户、标准化云端探测和本机风险 TTFT，以及融合值、待命升档层、熔断/黑名单/延迟等排除原因、近 3 小时稳定率、会话数量、在飞请求及 Key 池状态。无头 standalone 版本会在右上角标记“无头路由器”。候选行可一键锁定/解除某个组,策略区也可自定义发往模型 API 的 User-Agent。右上角提供官方 Sentry 用户反馈入口。运行中的配置可直接保存；`keyMode` 和 `poolMaxGroups` 属于启动级配置，修改后重启生效。
@@ -93,7 +97,7 @@ AIHub 无法直连时，打开“设置 → 出站代理”，选择“系统代
 | Linux | `~/.config/aihub-auto` |
 | macOS | `~/Library/Application Support/aihub-auto` |
 
-其中 `config.json` 保存路由配置和会话状态，`app.log` 记录脱敏运行日志，`crash.log` 记录启动、退出和异常事件，均会自动轮转。可通过 `AIHUB_AUTO_CONFIG_DIR` 指定其他目录。
+其中 `config.json` 保存路由配置，`credentials.json` 保存当前活动账号凭据，`accounts.json` 保存已验证账号档案，`state.json` 保存当前账号的路由状态；`app.log` 记录脱敏运行日志，`crash.log` 记录启动、退出和异常事件，均会自动轮转。可通过 `AIHUB_AUTO_CONFIG_DIR` 指定其他目录。
 
 默认使用 `xytime/aihub` 的公共 Sentry DSN，也可在 `config.json` 设置 `sentryDsn` 或用 `SENTRY_DSN` 环境变量覆盖。启用后只上报路由器自身异常，不把 AIHub/OpenAI 响应错误、超时、连接中断或客户端取消当成 Sentry 错误；tracing、session、fetch、console、请求内容及各类敏感数据自动采集均关闭。登录邮箱仅在账号已验证时用于 Sentry user 与反馈表单预填，未登录保持匿名。
 

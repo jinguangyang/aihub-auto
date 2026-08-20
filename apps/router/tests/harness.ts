@@ -8,6 +8,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountSwitchService } from "../src/account-switch.ts";
 import {
+	AccountsSchema,
+	ensureActiveProfile,
+	type Accounts,
+} from "../src/accounts.ts";
+import {
 	ConfigSchema,
 	FileStore,
 	StateSchema,
@@ -29,6 +34,7 @@ export interface Harness {
 	config: AppConfig;
 	state: AppState;
 	credentials: Credentials;
+	accounts: Accounts;
 	client: AIHubClient;
 	executor: RouteExecutor;
 	daemon: RouteDaemon;
@@ -41,6 +47,9 @@ export interface Harness {
 	logger: Logger;
 	persistState: () => Promise<void>;
 	persistCredentials: () => Promise<void>;
+	persistAccounts: () => Promise<void>;
+	restartState: { pending: boolean };
+	restartRequested: { value: boolean };
 	server?: ReturnType<typeof createServer>;
 	serverUrl?: string;
 	configDir: string;
@@ -74,6 +83,23 @@ export function createHarness(opts?: {
 					refreshToken: "mock-rt",
 					accountIdentity: "id:account-1",
 				};
+	const accounts = AccountsSchema.parse(
+		loggedIn
+			? {
+					activeIdentity: "id:account-1",
+					profiles: [
+						{
+							identity: "id:account-1",
+							email: "mock@test.local",
+							accessToken: "mock-at",
+							refreshToken: "mock-rt",
+							createdAt: 1,
+							lastUsedAt: 1,
+						},
+					],
+				}
+			: {},
+	);
 
 	const logger = new Logger("error", () => {});
 	const audit = new AuditLog(undefined);
@@ -94,6 +120,9 @@ export function createHarness(opts?: {
 	const persistState = async () => store.write("state.json", state);
 	const persistCredentials = async () =>
 		store.write("credentials.json", credentials);
+	const persistAccounts = async () => store.write("accounts.json", accounts);
+	const restartState = { pending: false };
+	const restartRequested = { value: false };
 	const persistConfig = async () => store.write("config.json", config);
 
 	const executor = new RouteExecutor({
@@ -123,6 +152,12 @@ export function createHarness(opts?: {
 			try {
 				const s = await client.refreshSession(credentials.refreshToken);
 				credentials.accessToken = s.accessToken;
+				credentials.refreshToken = s.refreshToken;
+				credentials.expiresAt = s.expiresAt;
+				await persistCredentials();
+				if (ensureActiveProfile(accounts, credentials)) {
+					await persistAccounts();
+				}
 				return true;
 			} catch {
 				return false;
@@ -156,8 +191,10 @@ export function createHarness(opts?: {
 		executor,
 		daemon,
 		logger,
+		accounts,
 		persistState,
 		persistCredentials,
+		persistAccounts,
 		syncSentryUser: () => {},
 	});
 
@@ -199,6 +236,12 @@ export function createHarness(opts?: {
 			persistConfig,
 			persistState,
 			persistCredentials,
+			accounts,
+			persistAccounts,
+			requestRestart: () => {
+				restartRequested.value = true;
+			},
+			restartState,
 			sentryDsn: config.sentryDsn,
 			desktopMode: false,
 			syncSentryUser: () => {},
@@ -215,6 +258,7 @@ export function createHarness(opts?: {
 		config,
 		state,
 		credentials,
+		accounts,
 		client,
 		executor,
 		daemon,
@@ -227,6 +271,9 @@ export function createHarness(opts?: {
 		logger,
 		persistState,
 		persistCredentials,
+		persistAccounts,
+		restartState,
+		restartRequested,
 		server,
 		serverUrl,
 		configDir: dir,

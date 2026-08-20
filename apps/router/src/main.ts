@@ -16,6 +16,10 @@ import {
 } from "./config.ts";
 import { alignAccountStateOwner } from "./account-state.ts";
 import { AccountSwitchService } from "./account-switch.ts";
+import {
+	ensureActiveProfile,
+	loadAccounts,
+} from "./accounts.ts";
 import { RouteDaemon } from "./daemon.ts";
 import { RouteExecutor } from "./executor.ts";
 import { AuditLog, CrashLog, Logger, RollingFileLog } from "./logger.ts";
@@ -54,6 +58,7 @@ async function main(): Promise<void> {
 	}
 	const state = await loadState(store);
 	const credentials = await loadCredentials(store);
+	const accounts = await loadAccounts(store);
 	const sentryDsn = SentryDsnSchema.parse(
 		(process.env["SENTRY_DSN"] ?? config.sentryDsn).trim(),
 	);
@@ -152,6 +157,7 @@ async function main(): Promise<void> {
 	const persistConfig = async () => store.write("config.json", config);
 	const persistCredentials = async () =>
 		store.write("credentials.json", credentials);
+	const persistAccounts = async () => store.write("accounts.json", accounts);
 	const clearSentryIdentity = async () => {
 		if (credentials.email !== undefined) {
 			credentials.email = undefined;
@@ -184,6 +190,9 @@ async function main(): Promise<void> {
 		}
 	};
 	await refreshSentryIdentity();
+	if (ensureActiveProfile(accounts, credentials)) {
+		await persistAccounts();
+	}
 
 	const executor = new RouteExecutor({
 		client,
@@ -220,6 +229,13 @@ async function main(): Promise<void> {
 				credentials.expiresAt = session.expiresAt;
 				await persistCredentials();
 				await refreshSentryIdentity();
+				if (ensureActiveProfile(accounts, credentials)) {
+					await persistAccounts().catch((error) =>
+						logger.warn(
+							`账号档案保存失败，将在下次启动重试:${error instanceof Error ? error.message : String(error)}`,
+						),
+					);
+				}
 				logger.info("token 已自动续期");
 				return true;
 			} catch {
@@ -256,10 +272,14 @@ async function main(): Promise<void> {
 		executor,
 		daemon,
 		logger,
+		accounts,
 		persistState,
 		persistCredentials,
+		persistAccounts,
 		syncSentryUser,
 	});
+	const restartState = { pending: false };
+	let requestRestart: () => void = () => {};
 
 	const proxyDeps: ProxyDeps = {
 		baseUrl: config.baseUrl,
@@ -289,6 +309,7 @@ async function main(): Promise<void> {
 			config,
 			state,
 			credentials,
+			accounts,
 			client,
 			accountSwitcher,
 			daemon,
@@ -299,6 +320,9 @@ async function main(): Promise<void> {
 			persistConfig,
 			persistState,
 			persistCredentials,
+			persistAccounts,
+			requestRestart: () => requestRestart(),
+			restartState,
 			sentryDsn,
 			desktopMode: process.env["AIHUB_AUTO_DESKTOP"] === "1",
 			syncSentryUser,
@@ -347,7 +371,7 @@ async function main(): Promise<void> {
 	}
 
 	let shuttingDown = false;
-	const shutdown = async (signal: string) => {
+	const shutdown = async (signal: string, exitCode = 0) => {
 		if (shuttingDown) return;
 		shuttingDown = true;
 		logger.info(`收到 ${signal},优雅退出…`);
@@ -362,8 +386,9 @@ async function main(): Promise<void> {
 		state.observations = observations.toJSON();
 		await persistState().catch(() => {});
 		await flushRouterSentry();
-		process.exit(0);
+		process.exit(exitCode);
 	};
+	requestRestart = () => void shutdown("control restart", 75);
 	process.on("SIGINT", () => void shutdown("SIGINT"));
 	process.on("SIGTERM", () => void shutdown("SIGTERM"));
 	const desktopShutdownToken = process.env["AIHUB_AUTO_DESKTOP_SHUTDOWN_TOKEN"];

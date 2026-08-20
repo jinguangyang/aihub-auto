@@ -19,6 +19,10 @@ export OPENAI_API_KEY="anything"          # 本地代理自动注入真实 Key,�
 
 客户端 API Key 和 AIHub 上游 Key 是两层凭据。客户端始终使用路由器的 `proxyToken`；仅监听本机且未配置 `proxyToken` 时可填写任意非空占位值。不要把 AIHub 账号内部生成的 `sk` 填给客户端。在控制台登录另一个 AIHub 账号后，路由器会删除本实例记录的旧账号托管 Key、清空旧会话和 single Key 凭据，再为新账号按需创建 Key。客户端 Base URL 与 API Key 不变，不需要重启；若仍有模型请求运行，切换会返回 `409` 并提示稍后重试。
 
+已验证的账号档案保存在配置目录的 `accounts.json`。登录会新增或更新档案；“退出当前账户”清理运行时凭据、会话和本实例托管 Key，但保留档案供一键切换；“移除”才删除档案。`GET /ctl/accounts` 及其他账号控制接口只返回脱敏元数据，绝不返回 access/refresh token、密码或上游 `sk`。
+
+控制台设置中的“重启服务”调用鉴权的 `POST /ctl/restart`。有活动流或账号变更时会返回 `409`；成功返回 `202` 后，standalone 进程以退出码 `75` 结束，需由 systemd、Docker、launchd 或其他 supervisor 负责拉起。桌面 sidecar 会自动识别退出码 `75` 并重启；普通退出仍为 `0`。
+
 ## CC Switch 余额查询
 
 公网实例在 CC Switch 的 Codex 供应商中填写：
@@ -125,6 +129,8 @@ AIHUB_AUTO_PORT=9000 ./aihub-auto
 | `sessionTtlMs` | 86400000 | 会话与模型能力记录保留时间 |
 | `sessionMaxEntries` | 10000 | 会话记录上限 |
 | `pollIntervalMs` | 60000 | 路由轮询间隔 |
+| `accountRefreshIntervalMs` | 600000 | 账号可用分组与专属倍率刷新间隔 |
+| `providerRefreshIntervalMs` | 300000 | 云端 provider TTFT 刷新间隔 |
 | `proxyToken` | 无 | 反代访问口令;**监听非 127.0.0.1 时必填** |
 | `uiPassword` | 无 | 控制台口令;**监听非 127.0.0.1 时必填** |
 | `decision.*` | 见 ALGORITHM.md | 粘性/缓存惩罚/空闲阈值/最短驻留 |

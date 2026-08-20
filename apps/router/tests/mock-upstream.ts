@@ -45,6 +45,7 @@ export class MockAIHub {
 	refreshCalls = 0;
 	/** 强制业务接口返回 401(模拟 token 过期);refresh 后復位 */
 	expireToken = false;
+	meDelayMs = 0;
 	accounts = new Map([
 		["mock-at", { id: "account-1", email: "mock@test.local" }],
 		["mock-at-2", { id: "account-1", email: "mock@test.local" }],
@@ -152,6 +153,7 @@ export class MockAIHub {
 			});
 		}
 		if (path === "/api/v1/auth/me") {
+			if (this.meDelayMs > 0) await Bun.sleep(this.meDelayMs);
 			if (this.expireToken)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
 			const account = this.accountFor(auth);

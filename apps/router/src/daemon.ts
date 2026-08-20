@@ -8,6 +8,7 @@ import {
 	type GroupStat,
 	type LocalObservationStore,
 	type Platform,
+	type ProviderLatencyStat,
 	type RouteState,
 	type ScoredCandidate,
 	type ScoringOptions,
@@ -56,6 +57,12 @@ export interface RoundResult {
 	stale: boolean;
 }
 
+function sameIdSet(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean {
+	if (a.size !== b.size) return false;
+	for (const id of a) if (!b.has(id)) return false;
+	return true;
+}
+
 export interface RouteRequest {
 	sessionKey?: string;
 	model?: string;
@@ -81,6 +88,12 @@ export class RouteDaemon {
 		| undefined;
 	private allowedGroupIds: number[] | undefined;
 	private userRates: Map<number, number> | undefined;
+	private accountDataAt = 0;
+	private accountDataGroupSet: Set<number> | undefined;
+	private readonly lastProviders = new Map<
+		Platform,
+		{ providers: Map<number, ProviderLatencyStat>; at: number }
+	>();
 	private readonly routeLocks = new Map<
 		string,
 		Promise<ActiveKey | undefined>
@@ -100,18 +113,35 @@ export class RouteDaemon {
 		if (this.statsInflight) return this.statsInflight;
 		const pending = (async () => {
 			try {
-				const [page, providers] = await Promise.all([
-					this.deps.client.getUsageStats({
-						platform,
-						samples: this.deps.config.samples,
-					}),
-					this.deps.client.getProviderLatencyStats(platform).catch((err) => {
+				const page = await this.deps.client.getUsageStats({
+					platform,
+					samples: this.deps.config.samples,
+				});
+				const cachedProviders = this.lastProviders.get(platform);
+				const providersFresh =
+					cachedProviders !== undefined &&
+					Date.now() - cachedProviders.at <
+						this.deps.config.providerRefreshIntervalMs;
+				let providers = providersFresh
+					? cachedProviders.providers
+					: new Map<number, ProviderLatencyStat>();
+				if (!providersFresh) {
+					try {
+						providers =
+							await this.deps.client.getProviderLatencyStats(platform);
+						this.lastProviders.set(platform, {
+							providers,
+							at: Date.now(),
+						});
+					} catch (err) {
 						this.deps.logger.debug(
 							`provider TTFT 拉取失败(${platform}),回退 usage-stats:${err instanceof Error ? err.message : ""}`,
 						);
-						return new Map();
-					}),
-				]);
+						providers =
+							cachedProviders?.providers ??
+							new Map<number, ProviderLatencyStat>();
+					}
+				}
 				const items = mergeProviderLatencies(page.items, providers);
 				this.lastStats.set(platform, { items, at: Date.now() });
 				return { items, stale: false };
@@ -129,8 +159,18 @@ export class RouteDaemon {
 		});
 	}
 
-	private async refreshAccountData(): Promise<void> {
+	private async refreshAccountData(
+		statsGroupIds: Set<number>,
+		force = false,
+	): Promise<void> {
 		if (!this.deps.credentials.accessToken) return;
+		const withinTtl =
+			Date.now() - this.accountDataAt <
+			this.deps.config.accountRefreshIntervalMs;
+		const groupSetUnchanged =
+			this.accountDataGroupSet !== undefined &&
+			sameIdSet(this.accountDataGroupSet, statsGroupIds);
+		if (!force && withinTtl && groupSetUnchanged) return;
 		const [groups, rates] = await Promise.allSettled([
 			this.deps.client.getAvailableGroups(),
 			this.deps.client.getUserGroupRates(),
@@ -142,6 +182,8 @@ export class RouteDaemon {
 				.filter((id) => Number.isInteger(id) && id > 0);
 		}
 		if (rates.status === "fulfilled") this.userRates = rates.value;
+		this.accountDataAt = Date.now();
+		this.accountDataGroupSet = new Set(statsGroupIds);
 	}
 
 	private breakerGroupIds(now: number, allowHalfOpen: boolean): number[] {
@@ -253,7 +295,15 @@ export class RouteDaemon {
 	resetAccountCaches(): void {
 		this.allowedGroupIds = undefined;
 		this.userRates = undefined;
+		this.accountDataAt = 0;
+		this.accountDataGroupSet = undefined;
+		this.lastProviders.clear();
+		this.lastStats.clear();
 		this.lastRound = undefined;
+	}
+
+	isAccountSwitching(): boolean {
+		return this.accountSwitching;
 	}
 
 	/** 锁 revision、当前配置资格检查与持久化在同一控制事务内完成。 */
@@ -282,8 +332,11 @@ export class RouteDaemon {
 				return { updated: true as const, lock: { ...current } };
 			}
 			if (groupId !== null) {
-				await this.refreshAccountData();
 				const items = await this.routingItems();
+				await this.refreshAccountData(
+					new Set(items.map((item) => item.groupId)),
+					true,
+				);
 				const target = items.find((item) => item.groupId === groupId);
 				if (!target) {
 					return {
@@ -327,10 +380,8 @@ export class RouteDaemon {
 	}): Promise<RoundResult> {
 		const now = Date.now();
 		const platform = opts?.platform ?? "openai";
-		const [{ items, stale }] = await Promise.all([
-			this.fetchStats(platform),
-			this.refreshAccountData(),
-		]);
+		const { items, stale } = await this.fetchStats(platform);
+		await this.refreshAccountData(new Set(items.map((item) => item.groupId)));
 		const evaluation = this.evaluate(items, now);
 		const routeState: RouteState = {
 			currentGroupId: this.deps.state.currentGroupId,

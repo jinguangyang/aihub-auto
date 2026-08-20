@@ -2,6 +2,7 @@ import { AIHubApiError, type AIHubClient, type ExcludeReason } from "@aihub-auto
 import { join } from "node:path";
 import { AccountSwitchBusyError } from "./account-errors.ts";
 import type { AccountSwitchService } from "./account-switch.ts";
+import type { Accounts } from "./accounts.ts";
 import {
 	ConfigSchema,
 	OutboundProxyConfigSchema,
@@ -35,6 +36,7 @@ export interface ServerDeps {
 	config: AppConfig;
 	state: AppState;
 	credentials: Credentials;
+	accounts: Accounts;
 	client: AIHubClient;
 	accountSwitcher: AccountSwitchService;
 	daemon: RouteDaemon;
@@ -45,6 +47,9 @@ export interface ServerDeps {
 	persistConfig: () => Promise<void>;
 	persistState: () => Promise<void>;
 	persistCredentials: () => Promise<void>;
+	persistAccounts: () => Promise<void>;
+	requestRestart: () => void;
+	restartState: { pending: boolean };
 	/** 实际使用的公共 DSN(可能来自 SENTRY_DSN 环境变量)。 */
 	sentryDsn: string;
 	/** 由 Tauri desktop sidecar 启动;否则为 standalone 无头路由器。 */
@@ -282,6 +287,125 @@ export async function handleControl(
 				error instanceof AIHubApiError && error.status === 401 ? 401 : 502,
 			);
 		}
+	}
+
+	if (path === "/ctl/accounts" && req.method === "GET") {
+		return json({
+			activeIdentity: deps.accounts.activeIdentity ?? null,
+			accounts: deps.accountSwitcher.listProfiles(),
+		});
+	}
+
+	if (path === "/ctl/accounts/switch" && req.method === "POST") {
+		let body: unknown;
+		try {
+			body = await req.json();
+		} catch {
+			return json({ error: "非法 JSON" }, 400);
+		}
+		if (typeof body !== "object" || body === null || Array.isArray(body)) {
+			return json({ error: "请求必须包含 identity" }, 400);
+		}
+		const accountSwitchBody = body as Record<string, unknown>;
+		if (
+			Object.keys(accountSwitchBody).some((key) => key !== "identity") ||
+			typeof accountSwitchBody.identity !== "string" ||
+			!accountSwitchBody.identity.trim()
+		) {
+			return json({ error: "请求必须包含 identity" }, 400);
+		}
+		const identity = accountSwitchBody.identity;
+		if (deps.restartState.pending) {
+			return json({ code: "RESTART_PENDING", error: "服务已在重启中" }, 409);
+		}
+		try {
+			return json(
+				await deps.accountSwitcher.switchTo(identity),
+			);
+		} catch (err) {
+			if (err instanceof AccountSwitchBusyError) {
+				return json({ code: "ACCOUNT_SWITCH_BUSY", error: err.message }, 409);
+			}
+			return json(
+				{ error: err instanceof Error ? err.message : "账号切换失败" },
+				400,
+			);
+		}
+	}
+
+	if (path === "/ctl/logout" && req.method === "POST") {
+		if (deps.restartState.pending) {
+			return json({ code: "RESTART_PENDING", error: "服务已在重启中" }, 409);
+		}
+		try {
+			return json(await deps.accountSwitcher.logout());
+		} catch (err) {
+			if (err instanceof AccountSwitchBusyError) {
+				return json({ code: "ACCOUNT_SWITCH_BUSY", error: err.message }, 409);
+			}
+			return json(
+				{ error: err instanceof Error ? err.message : "退出登录失败" },
+				400,
+			);
+		}
+	}
+
+	if (path === "/ctl/accounts/remove" && req.method === "POST") {
+		let body: unknown;
+		try {
+			body = await req.json();
+		} catch {
+			return json({ error: "非法 JSON" }, 400);
+		}
+		if (typeof body !== "object" || body === null || Array.isArray(body)) {
+			return json({ error: "请求必须包含 identity" }, 400);
+		}
+		const accountRemoveBody = body as Record<string, unknown>;
+		if (
+			Object.keys(accountRemoveBody).some((key) => key !== "identity") ||
+			typeof accountRemoveBody.identity !== "string" ||
+			!accountRemoveBody.identity.trim()
+		) {
+			return json({ error: "请求必须包含 identity" }, 400);
+		}
+		const identity = accountRemoveBody.identity;
+		if (deps.restartState.pending) {
+			return json({ code: "RESTART_PENDING", error: "服务已在重启中" }, 409);
+		}
+		try {
+			return json(
+				await deps.accountSwitcher.remove(identity),
+			);
+		} catch (err) {
+			if (err instanceof AccountSwitchBusyError) {
+				return json({ code: "ACCOUNT_SWITCH_BUSY", error: err.message }, 409);
+			}
+			return json(
+				{ error: err instanceof Error ? err.message : "删除账号失败" },
+				400,
+			);
+		}
+	}
+
+	if (path === "/ctl/restart" && req.method === "POST") {
+		if (deps.restartState.pending) {
+			return json({ code: "RESTART_PENDING", error: "服务已在重启中" }, 409);
+		}
+		if (deps.accountSwitcher.isMutating() || deps.daemon.isAccountSwitching()) {
+			return json(
+				{ code: "ACCOUNT_SWITCH_BUSY", error: "账号操作正在进行" },
+				409,
+			);
+		}
+		if (deps.proxyDeps.traffic.snapshot().activeStreams > 0) {
+			return json(
+				{ code: "TRAFFIC_ACTIVE", error: "仍有请求正在处理" },
+				409,
+			);
+		}
+		deps.restartState.pending = true;
+		setTimeout(() => deps.requestRestart(), 50);
+		return json({ ok: true, restarting: true }, 202);
 	}
 
 	if (path === "/ctl/proxy-token" && req.method === "GET") {
@@ -730,6 +854,9 @@ export async function handleControl(
 			body = (await req.json()) as typeof body;
 		} catch {
 			return json({ error: "非法 JSON" }, 400);
+		}
+		if (deps.restartState.pending) {
+			return json({ code: "RESTART_PENDING", error: "服务已在重启中" }, 409);
 		}
 		try {
 			const input =

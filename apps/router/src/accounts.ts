@@ -61,7 +61,7 @@ export async function loadAccounts(store: FileStore): Promise<Accounts> {
 	);
 }
 
-export function upsertAccountProfile(
+export function persistAccountProfile(
 	accounts: Accounts,
 	profile: AccountProfile,
 ): void {
@@ -78,6 +78,9 @@ export function upsertAccountProfile(
 		createdAt: existing.createdAt,
 	});
 }
+
+/** Backward-compatible name used by the router's account-switch service. */
+export const upsertAccountProfile = persistAccountProfile;
 
 export function removeAccountProfile(
 	accounts: Accounts,
@@ -96,12 +99,13 @@ export function removeAccountProfile(
 
 export function redactedAccountProfiles(
 	accounts: Accounts,
+	activeIdentity = accounts.activeIdentity,
 ): AccountProfileSummary[] {
 	return accounts.profiles
 		.map((profile) => ({
 			identity: profile.identity,
 			...(profile.email ? { email: profile.email } : {}),
-			active: profile.identity === accounts.activeIdentity,
+			active: profile.identity === activeIdentity,
 			createdAt: profile.createdAt,
 			lastUsedAt: profile.lastUsedAt,
 		}))
@@ -138,7 +142,7 @@ export function ensureActiveProfile(
 	if (existing && sameCredentialProfile(existing, credentials) && !activeChanged) {
 		return false;
 	}
-	upsertAccountProfile(accounts, {
+	persistAccountProfile(accounts, {
 		identity,
 		...(credentials.email ? { email: credentials.email } : {}),
 		accessToken,

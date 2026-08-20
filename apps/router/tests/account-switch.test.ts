@@ -18,8 +18,10 @@ describe("AIHub account switch service", () => {
 			executor: h.executor,
 			daemon: h.daemon,
 			logger: h.logger,
+			accounts: h.accounts,
 			persistState: h.persistState,
 			persistCredentials: h.persistCredentials,
+			persistAccounts: h.persistAccounts,
 			syncSentryUser: () => {},
 		});
 	}
@@ -34,6 +36,19 @@ describe("AIHub account switch service", () => {
 		expect(result.switched).toBe(false);
 		expect(h.state.pool["1"]).toBeDefined();
 		expect(h.affinity.resolve("session")).toBe(1);
+	});
+
+	test("mutation count covers candidate validation and queued operations", async () => {
+		h = createHarness();
+		h.mock.meDelayMs = 25;
+		const accountSwitcher = service();
+		const first = accountSwitcher.login({ token: "account-two-token" });
+		const second = accountSwitcher.logout();
+		expect(accountSwitcher.isMutating()).toBe(true);
+		await first;
+		expect(accountSwitcher.isMutating()).toBe(true);
+		await second;
+		expect(accountSwitcher.isMutating()).toBe(false);
 	});
 
 	test("different identity clears old account state and keeps the new credential", async () => {
@@ -58,6 +73,84 @@ describe("AIHub account switch service", () => {
 				(entry) => entry.sk !== "sk-old-single",
 			),
 		).toBe(true);
+	});
+
+	test("saved profiles can switch back without deleting either profile", async () => {
+		h = createHarness();
+
+		await service().login({ token: "account-two-token" });
+		expect(h.accounts.profiles.map((profile) => profile.identity)).toEqual([
+			"id:account-1",
+			"id:account-2",
+		]);
+
+		const result = await service().switchTo("id:account-1");
+
+		expect(result).toMatchObject({ switched: true, email: "mock@test.local" });
+		expect(h.credentials.accessToken).toBe("mock-at");
+		expect(h.accounts.activeIdentity).toBe("id:account-1");
+		expect(h.accounts.profiles).toHaveLength(2);
+	});
+
+	test("invalid saved profile leaves the active account unchanged", async () => {
+		h = createHarness();
+		h.accounts.profiles.push({
+			identity: "id:account-2",
+			email: "second@test.local",
+			accessToken: "unknown-token",
+			createdAt: 2,
+			lastUsedAt: 2,
+		});
+		const previous = { ...h.credentials };
+
+		await expect(service().switchTo("id:account-2")).rejects.toThrow(
+			/unauthorized/,
+		);
+		expect(h.credentials).toEqual(previous);
+		expect(h.accounts.activeIdentity).toBe("id:account-1");
+	});
+
+	test("logout clears runtime state but retains the saved profile", async () => {
+		h = createHarness();
+		const result = await service().logout();
+
+		expect(result.ok).toBe(true);
+		expect(h.credentials.accessToken).toBeUndefined();
+		expect(h.accounts.activeIdentity).toBeUndefined();
+		expect(h.accounts.profiles).toHaveLength(1);
+	});
+
+	test("remove deletes inactive profiles and active profiles after logout", async () => {
+		h = createHarness();
+		await service().login({ token: "account-two-token" });
+
+		expect(await service().remove("id:account-1")).toEqual({
+			ok: true,
+			removed: true,
+		});
+		expect(h.accounts.profiles.map((profile) => profile.identity)).toEqual([
+			"id:account-2",
+		]);
+
+		expect(await service().remove("id:account-2")).toEqual({
+			ok: true,
+			removed: true,
+		});
+		expect(h.credentials.accessToken).toBeUndefined();
+		expect(h.accounts.profiles).toEqual([]);
+	});
+
+	test("remove logs out the running account when its active profile marker is missing", async () => {
+		h = createHarness();
+		delete h.accounts.activeIdentity;
+
+		expect(await service().remove("id:account-1")).toEqual({
+			ok: true,
+			removed: true,
+		});
+		expect(h.credentials.accessToken).toBeUndefined();
+		expect(h.credentials.accountIdentity).toBeUndefined();
+		expect(h.accounts.profiles).toEqual([]);
 	});
 
 	test("active traffic rejects switching before credentials or pool mutate", async () => {
@@ -104,10 +197,12 @@ describe("AIHub account switch service", () => {
 			executor: h.executor,
 			daemon: h.daemon,
 			logger: h.logger,
+			accounts: h.accounts,
 			persistState: h.persistState,
 			persistCredentials: async () => {
 				throw new Error("disk full");
 			},
+			persistAccounts: h.persistAccounts,
 			syncSentryUser: () => {},
 		});
 
@@ -130,10 +225,12 @@ describe("AIHub account switch service", () => {
 			executor: h.executor,
 			daemon: h.daemon,
 			logger: h.logger,
+			accounts: h.accounts,
 			persistState: h.persistState,
 			persistCredentials: async () => {
 				throw new Error("disk full");
 			},
+			persistAccounts: h.persistAccounts,
 			syncSentryUser: () => {},
 		});
 

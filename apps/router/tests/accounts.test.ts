@@ -6,6 +6,7 @@ import {
 	AccountsSchema,
 	ensureActiveProfile,
 	loadAccounts,
+	persistAccountProfile,
 	redactedAccountProfiles,
 	upsertAccountProfile,
 	type Accounts,
@@ -41,6 +42,7 @@ describe("AIHub account profile store", () => {
 		const text = JSON.stringify(redacted);
 		expect(text).not.toContain("access-one");
 		expect(text).not.toContain("refresh-one");
+		expect(redactedAccountProfiles(accounts, "id:other")[0]?.active).toBe(false);
 	});
 
 	test("rejects duplicate identities and unknown fields", () => {
@@ -97,7 +99,13 @@ describe("AIHub account profile store", () => {
 			createdAt: 99,
 			lastUsedAt: 2,
 		});
-		expect(accounts.profiles).toHaveLength(1);
+		persistAccountProfile(accounts, {
+			identity: "id:two",
+			accessToken: "c",
+			createdAt: 3,
+			lastUsedAt: 3,
+		});
+		expect(accounts.profiles).toHaveLength(2);
 		expect(accounts.profiles[0]).toMatchObject({
 			identity: "id:one",
 			email: "one@example.com",

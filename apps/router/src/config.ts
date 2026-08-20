@@ -191,6 +191,18 @@ export const ConfigSchema = z
 	cleanupPoolOnExit: z.boolean().default(false),
 	pollIntervalMs: z.number().int().min(5_000).default(60_000),
 	samples: z.number().int().min(1).max(500).default(100),
+	/** 账户可用组/专属倍率刷新间隔;变化很少,无需每个路由轮都拉取。 */
+	accountRefreshIntervalMs: z
+		.number()
+		.int()
+		.min(60_000)
+		.default(10 * 60_000),
+	/** 云端探测 TTFT 刷新间隔;usage-stats 仍按 pollIntervalMs 刷新。 */
+	providerRefreshIntervalMs: z
+		.number()
+		.int()
+		.min(60_000)
+		.default(5 * 60_000),
 	errorRateCap: z.number().min(0).max(1).default(DEFAULT_ERROR_RATE_CAP),
 	decision: z
 		.object({

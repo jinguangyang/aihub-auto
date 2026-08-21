@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ExcludeReason } from "@aihub-auto/core";
 import type { AppState } from "./config.ts";
 
 const MAX_FINGERPRINT_CHARS = 64 * 1024;
@@ -6,6 +7,7 @@ const PRUNE_INTERVAL_MS = 60_000;
 
 export interface RequestRoutingContext {
 	model?: string;
+	failureReason?: ExcludeReason;
 	sessionKey?: string;
 	/** previous_response_id 实际产生于该组;并发 Responses 分支必须优先回到这里。 */
 	preferredGroupId?: number;

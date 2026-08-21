@@ -896,6 +896,8 @@ describe("控制台 API", () => {
 		h.mock.stats = [
 			makeStat({
 				groupId: 1,
+				supportedModels: ["gpt-5", "gpt-4o-mini"],
+				modelAvailabilityKnown: true,
 				rateMultiplier: 0.03,
 				avgTtftMs: 1500,
 				cloudProbeTtftMs: 1000,
@@ -937,6 +939,8 @@ describe("控制台 API", () => {
 			currentGroupId: number;
 			candidates: {
 				groupId: number;
+				models?: string[];
+				modelAvailabilityKnown?: boolean;
 				excluded: boolean;
 				excludeReason?: string;
 				ttft?: number;
@@ -966,6 +970,9 @@ describe("控制台 API", () => {
 				listen: { host: string; port: number };
 				proxyAuthRequired: boolean;
 				uiAuthRequired: boolean;
+				accountPoolMode: "all" | "plus" | "pro" | "team" | "mixed";
+				accountPoolPlans: Array<"plus" | "pro" | "team">;
+				priceBand: { min: number; max: number } | null;
 				updateMirrors: string[];
 				outboundProxyMode: "none" | "system" | "custom";
 				outboundProxyUrl: string;
@@ -994,6 +1001,9 @@ describe("控制台 API", () => {
 			listen: { host: "127.0.0.1", port: 0 },
 			proxyAuthRequired: false,
 			uiAuthRequired: false,
+			accountPoolMode: "all",
+			accountPoolPlans: [],
+			priceBand: { min: 0, max: 0.15 },
 			updateMirrors: [],
 			outboundProxyMode: "none",
 			outboundProxyUrl: "",
@@ -1071,6 +1081,8 @@ describe("控制台 API", () => {
 		);
 		const eligible = status.candidates.find((c) => c.groupId === 1);
 		expect(eligible).toMatchObject({
+			models: ["gpt-5", "gpt-4o-mini"],
+			modelAvailabilityKnown: true,
 			cloudProbeTtft: 1000,
 			userTtft: 2000,
 			userSamples: 50,
@@ -1120,6 +1132,50 @@ describe("控制台 API", () => {
 			minSuccessRate: 0.85,
 			maxConservativeLatencyMs: 40_000,
 		});
+
+		const poolCfgRes = await fetch(`${base}/ctl/config`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				accountPoolMode: "all",
+				accountPoolPlans: ["plus", "team"],
+				priceBand: null,
+			}),
+		});
+		expect(poolCfgRes.status).toBe(200);
+		expect(h.config.accountPoolMode).toBe("all");
+		expect(h.config.accountPoolPlans).toEqual(["plus", "team"]);
+		expect(h.config.priceBand).toBeNull();
+
+		const partialUnlimitedRes = await fetch(`${base}/ctl/config`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ priceBand: { max: 0.4 } }),
+		});
+		expect(partialUnlimitedRes.status).toBe(200);
+		expect(h.config.priceBand).toEqual({ min: 0, max: 0.4 });
+
+		const stablePolicy = {
+			accountPoolMode: h.config.accountPoolMode,
+			accountPoolPlans: [...h.config.accountPoolPlans],
+			priceBand: h.config.priceBand,
+		};
+		for (const invalidPatch of [
+			{ accountPoolPlans: ["enterprise"] },
+			{ priceBand: { min: 0.5, max: 0.4 } },
+		]) {
+			const response = await fetch(`${base}/ctl/config`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(invalidPatch),
+			});
+			expect(response.status).toBe(400);
+			expect({
+				accountPoolMode: h.config.accountPoolMode,
+				accountPoolPlans: h.config.accountPoolPlans,
+				priceBand: h.config.priceBand,
+			}).toEqual(stablePolicy);
+		}
 		const uaRes = await fetch(`${base}/ctl/config`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },

@@ -186,6 +186,18 @@ const MANUAL_LOCK_OVERRIDE_REASONS = new Set<ExcludeReason>([
 	"economy_too_slow",
 ]);
 
+function effectiveAccountPoolPlans(config: AppConfig): string[] {
+	const plans =
+		config.accountPoolPlans.length > 0
+			? config.accountPoolPlans
+			: config.accountPoolMode === "all"
+				? []
+				: config.accountPoolMode === "mixed"
+					? ["plus", "pro", "team"]
+					: [config.accountPoolMode];
+	return [...new Set(plans)].sort();
+}
+
 function secureUiCookie(config: AppConfig): boolean {
 	return config.publicOrigin.startsWith("https://");
 }
@@ -462,6 +474,8 @@ export async function handleControl(
 		const candidates: Array<{
 			groupId: number;
 			code: string;
+			models?: string[];
+			modelAvailabilityKnown?: boolean;
 			rate: number;
 			ttft?: number;
 			conservative?: number;
@@ -486,6 +500,8 @@ export async function handleControl(
 				candidates.push({
 					groupId: c.stat.groupId,
 					code: c.stat.code,
+					models: c.stat.supportedModels,
+					modelAvailabilityKnown: c.stat.modelAvailabilityKnown,
 					rate: c.effectiveRate,
 					ttft: Math.round(c.blendedTtftMs),
 					conservative: Math.round(c.conservativeLatencyMs),
@@ -512,6 +528,8 @@ export async function handleControl(
 				candidates.push({
 					groupId: c.stat.groupId,
 					code: c.stat.code,
+					models: c.stat.supportedModels,
+					modelAvailabilityKnown: c.stat.modelAvailabilityKnown,
 					rate: c.effectiveRate,
 					ttft: Math.round(c.blendedTtftMs),
 					conservative: Math.round(c.conservativeLatencyMs),
@@ -539,6 +557,8 @@ export async function handleControl(
 				candidates.push({
 					groupId: e.stat.groupId,
 					code: e.stat.code,
+					models: e.stat.supportedModels,
+					modelAvailabilityKnown: e.stat.modelAvailabilityKnown,
 					rate: e.effectiveRate ?? e.stat.rateMultiplier,
 					ttft: e.evidence ? Math.round(e.evidence.blendedTtftMs) : undefined,
 					conservative: e.evidence
@@ -672,6 +692,8 @@ export async function handleControl(
 				mode: deps.config.mode,
 				keyMode: deps.config.keyMode,
 				poolMaxGroups: deps.config.poolMaxGroups,
+				accountPoolMode: deps.config.accountPoolMode,
+				accountPoolPlans: deps.config.accountPoolPlans,
 				priceBand: deps.config.priceBand,
 				economyPolicy: deps.config.economyPolicy,
 				upstreamUserAgent: deps.config.upstreamUserAgent,
@@ -796,6 +818,8 @@ export async function handleControl(
 		}
 		const allowed = [
 			"mode",
+			"accountPoolMode",
+			"accountPoolPlans",
 			"priceBand",
 			"economyPolicy",
 			"upstreamUserAgent",
@@ -806,17 +830,22 @@ export async function handleControl(
 			"pollIntervalMs",
 			"samples",
 		];
+		let poolPolicyChanged = false;
 		const configUpdate = await deps.daemon.runControlMutation(async () => {
 			const merged: Record<string, unknown> = { ...deps.config };
 			for (const k of allowed) {
 				if (k in patch) merged[k] = patch[k];
 			}
 			if (
-				patch.priceBand &&
+				patch.priceBand !== null &&
+				patch.priceBand !== undefined &&
 				typeof patch.priceBand === "object" &&
 				!Array.isArray(patch.priceBand)
 			) {
-				merged.priceBand = { ...deps.config.priceBand, ...patch.priceBand };
+				merged.priceBand = {
+					...(deps.config.priceBand ?? {}),
+					...patch.priceBand,
+				};
 			}
 			if (
 				patch.economyPolicy &&
@@ -835,8 +864,12 @@ export async function handleControl(
 					error: `配置校验失败:${parsed.error.issues.map((issue) => issue.message).join("; ")}`,
 				};
 			}
+			poolPolicyChanged =
+				effectiveAccountPoolPlans(parsed.data).join(",") !==
+				effectiveAccountPoolPlans(deps.config).join(",");
 			Object.assign(deps.config, parsed.data);
 			await deps.persistConfig();
+			if (poolPolicyChanged) deps.daemon.resetAccountCaches();
 			return { ok: true as const };
 		});
 		if (!configUpdate.ok) return json({ error: configUpdate.error }, 400);

@@ -61,7 +61,7 @@ Output summary:
 
 ### Observable-reason limitation
 
-The current implementation only writes exclusion reasons from `runOnce()` guard-loop evaluations to `lastRound`, `/ctl/status`, and `AuditLog`. Request-time model filtering happens only inside `route()` and is not persisted or emitted. Consequently, a real response/status/audit assertion that contains `model_unavailable` cannot be added without product behavior changes. This follow-up intentionally preserves the no-product-change constraint and asserts the actual route evaluation directly.
+Request-time model filtering remains separate from the daemon guard-loop `lastRound`, `/ctl/status`, and `AuditLog` candidate lists. The new response diagnostic intentionally covers the client-visible no-route contract without changing those broader status/audit schemas.
 
 Follow-up verification:
 
@@ -83,4 +83,10 @@ Verification:
 
 `78 pass`, `0 fail`, `571 expect() calls` (6.33s).
 
-Diagnostic commit: pending.
+Diagnostic commit: `6a4777bcb5044430b7e8cdb2a65192b782dff48f`.
+
+Complete router-suite verification:
+
+`bun test apps/router/tests`
+
+`173 pass`, `0 fail`, `851 expect() calls` (7.05s).

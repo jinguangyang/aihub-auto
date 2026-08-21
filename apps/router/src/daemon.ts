@@ -63,6 +63,25 @@ function sameIdSet(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean {
 	return true;
 }
 
+export function matchesAccountPool(
+	name: string,
+	configured: readonly ("plus" | "pro" | "team")[],
+	legacy: AppConfig["accountPoolMode"],
+): boolean {
+	const plans =
+		configured.length > 0
+			? configured
+			: legacy === "all"
+				? []
+				: legacy === "mixed"
+					? ["plus", "pro", "team"]
+					: [legacy];
+	if (plans.length === 0) return true;
+	return plans.some((plan) =>
+		new RegExp(`(^|[^A-Za-z0-9])${plan}([^A-Za-z0-9]|$)`, "i").test(name),
+	);
+}
+
 export interface RouteRequest {
 	sessionKey?: string;
 	model?: string;

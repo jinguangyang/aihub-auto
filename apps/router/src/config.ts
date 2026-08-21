@@ -110,6 +110,19 @@ function validateOutboundProxy(
 	}
 }
 
+function validatePriceBand(
+	config: { priceBand: { min: number; max: number } | null },
+	ctx: z.RefinementCtx,
+): void {
+	if (config.priceBand && config.priceBand.max < config.priceBand.min) {
+		ctx.addIssue({
+			code: z.ZodIssueCode.custom,
+			path: ["priceBand", "max"],
+			message: "priceBand.max must be greater than or equal to priceBand.min",
+		});
+	}
+}
+
 export const OutboundProxyConfigSchema = z
 	.object({
 		outboundProxyMode: OutboundProxyModeSchema,
@@ -148,12 +161,17 @@ export const ConfigSchema = z
 		})
 		.prefault({}),
 	mode: z.enum(["economy", "balanced", "speed"]).default("balanced"),
+	accountPoolMode: z
+		.enum(["all", "plus", "pro", "team", "mixed"])
+		.default("all"),
+	accountPoolPlans: z.array(z.enum(["plus", "pro", "team"])).max(3).default([]),
 	priceBand: z
 		.object({
 			min: z.number().min(0).default(DEFAULT_PRICE_BAND.min),
 			max: z.number().min(0).default(DEFAULT_PRICE_BAND.max),
 		})
-		.prefault({}),
+		.nullable()
+		.default(DEFAULT_PRICE_BAND),
 	blacklist: z.array(z.number().int()).default([]),
 	economyPolicy: z
 		.object({
@@ -233,7 +251,8 @@ export const ConfigSchema = z
 	auditLog: z.boolean().default(false),
 	logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 	})
-	.superRefine(validateOutboundProxy);
+	.superRefine(validateOutboundProxy)
+	.superRefine(validatePriceBand);
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
 

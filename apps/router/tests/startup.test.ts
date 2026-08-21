@@ -6,6 +6,7 @@ import {
 	type Credentials,
 } from "../src/config.ts";
 import { alignAccountStateOwner } from "../src/account-state.ts";
+import { matchesAccountPool } from "../src/daemon.ts";
 import {
 	applyStartupOptions,
 	parseStartupOptions,
@@ -98,5 +99,52 @@ describe("startup options", () => {
 		expect(result.reset).toBe(true);
 		expect(state.pool).toEqual({});
 		expect(state.accountIdentity).toBe("id:new-account");
+	});
+});
+
+describe("account pool configuration", () => {
+	test.each([
+		["A003-Plus", ["plus"], "pro", true],
+		["A003-Pro", ["pro"], "all", true],
+		["A001-Team/K12", ["team"], "all", true],
+		["TEAM PLUS pool", ["team"], "all", true],
+		["TEAM PLUS pool", ["pro"], "all", false],
+		["A008-BugTeam", ["team"], "all", false],
+		["A003-Plus", [], "all", true],
+		["A003-Plus", [], "mixed", true],
+		["A001-Team/K12", [], "mixed", true],
+	] as const)(
+		"matches %s configured=%j legacy=%s as %s",
+		(name, configured, legacy, expected) => {
+			expect(matchesAccountPool(name, configured, legacy)).toBe(expected);
+		},
+	);
+
+	test("defaults to no account-plan filtering with the existing price band", () => {
+		const config = ConfigSchema.parse({});
+		expect(config.accountPoolMode).toBe("all");
+		expect(config.accountPoolPlans).toEqual([]);
+		expect(config.priceBand).toEqual({ min: 0, max: 0.15 });
+	});
+
+	test("accepts a nullable price band", () => {
+		expect(ConfigSchema.parse({ priceBand: null }).priceBand).toBeNull();
+	});
+
+	test("rejects an inverted price band", () => {
+		expect(() =>
+			ConfigSchema.parse({ priceBand: { min: 0.3, max: 0.2 } }),
+		).toThrow();
+	});
+
+	test("preserves valid duplicate selected plans but rejects invalid selections", () => {
+		expect(
+			ConfigSchema.parse({ accountPoolPlans: ["plus", "plus"] })
+				.accountPoolPlans,
+		).toEqual(["plus", "plus"]);
+		expect(() =>
+			ConfigSchema.parse({ accountPoolPlans: ["plus", "pro", "team", "plus"] }),
+		).toThrow();
+		expect(() => ConfigSchema.parse({ accountPoolPlans: ["enterprise"] })).toThrow();
 	});
 });

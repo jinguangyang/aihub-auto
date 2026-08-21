@@ -85,6 +85,8 @@ export function matchesAccountPool(
 export interface RouteRequest {
 	sessionKey?: string;
 	model?: string;
+	/** Reason the final request-scoped evaluation found no route, when known. */
+	failureReason?: ExcludeReason;
 	preferredGroupId?: number;
 	cacheEvidence?: boolean;
 	continuity?: boolean;
@@ -658,7 +660,10 @@ export class RouteDaemon {
 			const target = evaluation.eligible.find((candidate) =>
 				Number.isFinite(candidate.score),
 			);
-			if (!target) return undefined;
+			if (!target) {
+				request.failureReason = evaluation.excluded[0]?.excludeReason;
+				return undefined;
+			}
 			if (!this.deps.breaker.allowRequest(target.stat.groupId, now)) {
 				blocked.add(target.stat.groupId);
 				continue;
@@ -753,6 +758,7 @@ export class RouteDaemon {
 		}
 
 		let target: ScoredCandidate | undefined;
+		let finalEvaluation: Evaluation | undefined;
 		for (;;) {
 			const evaluation = this.evaluate(
 				items,
@@ -762,6 +768,7 @@ export class RouteDaemon {
 				request.model,
 				modelBlocked,
 			);
+			finalEvaluation = evaluation;
 			target = this.selectP2c(evaluation, request.sessionKey ?? randomUUID());
 			if (!target) break;
 			if (this.deps.breaker.allowRequest(target.stat.groupId, now)) break;
@@ -770,6 +777,7 @@ export class RouteDaemon {
 
 		let groupId = target?.stat.groupId;
 		if (groupId === undefined) {
+			request.failureReason = finalEvaluation?.excluded[0]?.excludeReason;
 			const fallback = this.deps.state.currentGroupId;
 			if (
 				fallback === undefined ||

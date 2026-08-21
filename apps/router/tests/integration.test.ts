@@ -373,7 +373,12 @@ describe("守护循环", () => {
 			h.proxyDeps,
 		);
 		expect(modelResponse.status).toBe(503);
-		expect(await modelResponse.text()).not.toContain("sk-");
+		const modelBody = (await modelResponse.json()) as {
+			error: { code?: string; message: string };
+		};
+		expect(modelBody.error.code).toBe("model_unavailable");
+		expect(modelBody.error.message).toContain("没有可用分组");
+		expect(JSON.stringify(modelBody)).not.toContain("sk-");
 		expect(h.mock.requestLog.some((entry) => entry.path.startsWith("/v1/"))).toBe(false);
 		const modelStatus = await fetch(`${h.serverUrl}/ctl/status`).then((response) => response.text());
 		expect(modelStatus).toContain('"models":[]');

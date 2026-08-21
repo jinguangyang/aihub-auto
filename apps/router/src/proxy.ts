@@ -132,9 +132,19 @@ function upstreamFailure(status: number): boolean {
 	return status === 429 || status >= 500;
 }
 
-function errorResponse(status: number, message: string): Response {
+function errorResponse(
+	status: number,
+	message: string,
+	code?: string,
+): Response {
 	return new Response(
-		JSON.stringify({ error: { message, type: "aihub_auto_proxy" } }),
+		JSON.stringify({
+			error: {
+				message,
+				type: "aihub_auto_proxy",
+				...(code ? { code } : {}),
+			},
+		}),
 		{
 			status,
 			headers: {
@@ -437,7 +447,11 @@ async function handleProxyRequest(
 		);
 	}
 	if (!active) {
-		return errorResponse(503, "路由器未就绪:没有可用分组或尚未完成 AIHub 登录");
+		return errorResponse(
+			503,
+			"路由器未就绪:没有可用分组或尚未完成 AIHub 登录",
+			context.failureReason,
+		);
 	}
 
 	const headers = new Headers();

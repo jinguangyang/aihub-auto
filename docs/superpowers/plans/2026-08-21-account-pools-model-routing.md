@@ -327,23 +327,28 @@
 
 ### Task 7: Full Verification and Release Preparation
 
+**Status:** Complete on 2026-08-21. The release build used the cached Bun
+1.3.14 Linux x64 baseline runtime after Bun's normal cross-target download
+failed during extraction; the resulting binary was hash-verified before and
+after deployment.
+
 **Files:**
 - Modify only if a focused check exposes a defect; otherwise no source changes.
 - Inspect: `package.json`, desktop/Tauri version files, generated artifacts, and `git diff`.
 
-- [ ] **Step 1: Run the repository check.**
+- [x] **Step 1: Run the repository check.**
 
   Run: `bun run check`
 
   Expected: all Bun tests and TypeScript checks pass with zero failures.
 
-- [ ] **Step 2: Run focused build and Rust checks.**
+- [x] **Step 2: Run focused build and Rust checks.**
 
   Run: `bunx tsc --noEmit -p tsconfig.json; cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml; cargo fmt --check`
 
   Expected: TypeScript emits no diagnostics, Rust tests pass, and formatting exits successfully.
 
-- [ ] **Step 3: Run version and artifact checks.**
+- [x] **Step 3: Run version and artifact checks.**
 
   Run:
 
@@ -356,7 +361,7 @@
 
   Expected: the version command prints `validated v0.4.5`, the build exits 0, and at least one headless zip exists. Confirm the release files contain no secret fields and the working tree contains only the intentionally preserved untracked directories/files (`.playwright-cli/`, `.superpowers/`, `aihub-auto-src.tar.gz`, `output/`).
 
-- [ ] **Step 4: Review and publish.**
+- [x] **Step 4: Review and publish.**
 
   Run: `git diff fork/feat/single-user-v0.4.5...HEAD --stat; git status --short --branch`
 

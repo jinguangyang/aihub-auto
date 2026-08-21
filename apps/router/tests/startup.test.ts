@@ -12,6 +12,7 @@ import {
 	parseStartupOptions,
 	STARTUP_HELP,
 } from "../src/startup.ts";
+import { createHarness } from "./harness.ts";
 
 describe("startup options", () => {
 	test.each([
@@ -136,6 +137,15 @@ describe("account pool configuration", () => {
 		expect(config.accountPoolMode).toBe("mixed");
 		expect(config.accountPoolPlans).toEqual([]);
 		expect(config.priceBand).toBeNull();
+		const harness = createHarness({ configPatch: { priceBand: null } });
+		try {
+			expect(harness.daemon.scoringOptions("openai", Date.now()).priceBand).toEqual({
+				min: 0,
+				max: Number.MAX_VALUE,
+			});
+		} finally {
+			harness.dispose();
+		}
 	});
 
 	test("rejects an inverted price band", () => {

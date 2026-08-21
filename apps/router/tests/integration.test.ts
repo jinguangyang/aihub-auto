@@ -321,6 +321,7 @@ describe("守护循环", () => {
 			body: JSON.stringify({ accountPoolPlans: ["pro"] }),
 		});
 		expect(update.status).toBe(200);
+		expect(h.config.accountPoolMode).toBe("all");
 		expect(h.config.accountPoolPlans).toEqual(["pro"]);
 		expect(h.daemon.lastRound?.evaluation.eligible.map((candidate) => candidate.stat.groupId)).toEqual([2]);
 	});
@@ -349,6 +350,19 @@ describe("守护循环", () => {
 			makeStat({ groupId: 2, supportedModels: [], modelAvailabilityKnown: true }),
 		];
 		await h.daemon.runOnce({ dryRun: true });
+		const modelEvaluation = (h.daemon as unknown as {
+			evaluate: (
+				items: typeof h.mock.stats,
+				now: number,
+				extraBlacklist: number[],
+				allowHalfOpen: boolean,
+				model: string,
+			) => { excluded: Array<{ excludeReason: string }> };
+		}).evaluate(h.mock.stats, Date.now(), [], false, "target-model");
+		expect(modelEvaluation.excluded.map((candidate) => candidate.excludeReason)).toEqual([
+			"model_unavailable",
+			"model_unavailable",
+		]);
 		expect(await h.daemon.route({ model: "target-model" })).toBeUndefined();
 		const modelResponse = await handleProxy(
 			new Request("http://localhost/v1/chat/completions", {
@@ -362,6 +376,8 @@ describe("守护循环", () => {
 		expect(await modelResponse.text()).not.toContain("sk-");
 		expect(h.mock.requestLog.some((entry) => entry.path.startsWith("/v1/"))).toBe(false);
 		const modelStatus = await fetch(`${h.serverUrl}/ctl/status`).then((response) => response.text());
+		expect(modelStatus).toContain('"models":[]');
+		expect(modelStatus).toContain('"modelAvailabilityKnown":true');
 		expect(modelStatus).not.toContain("sk-mock");
 	});
 
@@ -374,11 +390,17 @@ describe("守护循环", () => {
 		h.mock.groupNames.set(2, "A002-Pro");
 		await h.daemon.runOnce();
 		expect(h.state.currentGroupId).toBe(1);
+		h.mock.requestLog.length = 0;
 
 		h.mock.groupNames.set(1, "A001-Pro");
 		h.mock.groupNames.set(2, "A002-Plus");
 		await h.accountSwitcher.login({ token: "account-two-token" });
 		expect(h.state.currentGroupId).toBe(2);
+		const refreshPaths = h.mock.requestLog.map((entry) => entry.path);
+		expect(refreshPaths).toContain("/api/v1/public/groups/usage-stats");
+		expect(refreshPaths).toContain("/api/v1/public/providers");
+		expect(refreshPaths).toContain("/api/v1/groups/available");
+		expect(refreshPaths).toContain("/api/v1/groups/rates");
 	});
 
 	test("account refresh failures retain cached eligibility and mark the round stale", async () => {

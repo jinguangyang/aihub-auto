@@ -566,6 +566,36 @@ describe("故障转移", () => {
 		expect(after).toBe(before);
 	});
 
+	test("static model capabilities keep incompatible sessions isolated", async () => {
+		h = await setupRouted();
+		h.mock.stats = [
+			makeStat({
+				groupId: 1,
+				supportedModels: ["gpt-sol"],
+				modelAvailabilityKnown: true,
+			}),
+			makeStat({
+				groupId: 2,
+				supportedModels: ["claude-haiku"],
+				modelAvailabilityKnown: true,
+			}),
+		];
+		h.daemon.resetAccountCaches();
+		await h.daemon.runOnce({ dryRun: true });
+		const gpt = await handleProxy(sessionReq("static-gpt", "gpt-sol"), h.proxyDeps);
+		expect(gpt.status).toBe(200);
+		expect(gpt.headers.get("x-aihub-auto-group")).toBe("1");
+		await gpt.text();
+		const claude = await handleProxy(
+			sessionReq("static-claude", "claude-haiku"),
+			h.proxyDeps,
+		);
+		expect(claude.status).toBe(200);
+		expect(claude.headers.get("x-aihub-auto-group")).toBe("2");
+		await claude.text();
+		expect(h.daemon.modelBlockStats().pairs).toBe(0);
+	});
+
 	test("非路由性 4xx(400)不换组如实透传", async () => {
 		h = await setupRouted();
 		h.mock.behavior.groups.set(1, { status: 400 });

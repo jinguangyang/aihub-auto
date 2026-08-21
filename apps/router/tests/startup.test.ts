@@ -105,9 +105,10 @@ describe("startup options", () => {
 describe("account pool configuration", () => {
 	test.each([
 		["A003-Plus", ["plus"], "pro", true],
+		["A003-Pro", ["plus"], "pro", false],
 		["A003-Pro", ["pro"], "all", true],
 		["A001-Team/K12", ["team"], "all", true],
-		["TEAM PLUS pool", ["team"], "all", true],
+		["TEAM PLUS 混池", ["team"], "all", true],
 		["TEAM PLUS pool", ["pro"], "all", false],
 		["A008-BugTeam", ["team"], "all", false],
 		["A003-Plus", [], "all", true],
@@ -128,7 +129,13 @@ describe("account pool configuration", () => {
 	});
 
 	test("accepts a nullable price band", () => {
-		expect(ConfigSchema.parse({ priceBand: null }).priceBand).toBeNull();
+		const config = ConfigSchema.parse({
+			accountPoolMode: "mixed",
+			priceBand: null,
+		});
+		expect(config.accountPoolMode).toBe("mixed");
+		expect(config.accountPoolPlans).toEqual([]);
+		expect(config.priceBand).toBeNull();
 	});
 
 	test("rejects an inverted price band", () => {

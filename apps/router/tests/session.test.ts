@@ -65,6 +65,28 @@ describe("requestRoutingContext", () => {
 		).toBe(7);
 	});
 
+	test("model-scoped session bindings coexist without cross-model reuse", () => {
+		const state = StateSchema.parse({});
+		const affinity = new SessionAffinity(state, 60_000, 100);
+		const headers = new Headers({ "x-aihub-auto-session": "shared" });
+		const gpt = requestRoutingContext(
+			"/v1/responses",
+			headers,
+			jsonBody({ model: "gpt-a" }),
+			() => undefined,
+		);
+		const claude = requestRoutingContext(
+			"/v1/responses",
+			headers,
+			jsonBody({ model: "claude-a" }),
+			() => undefined,
+		);
+		affinity.bind(gpt.sessionKey!, 1);
+		affinity.bind(claude.sessionKey!, 2);
+		expect(affinity.resolve(gpt.sessionKey!)).toBe(1);
+		expect(affinity.resolve(claude.sessionKey!)).toBe(2);
+	});
+
 	test("响应 ID 可跨分块累计识别", () => {
 		const chunks = [
 			'data: {"type":"response.created","response":{',

@@ -197,6 +197,174 @@ describe("守护循环", () => {
 		runtimeCompatible?.release?.();
 	});
 
+	test("single-key routing never acquires a static model-incompatible group", async () => {
+		h = createHarness({ configPatch: { keyMode: "single" } });
+		h.mock.stats = [
+			makeStat({
+				groupId: 1,
+				supportedModels: ["other-model"],
+				modelAvailabilityKnown: true,
+				rateMultiplier: 0.01,
+			}),
+			makeStat({
+				groupId: 2,
+				supportedModels: ["target-model"],
+				modelAvailabilityKnown: true,
+				rateMultiplier: 0.1,
+			}),
+		];
+		h.mock.keys.set(1, {
+			id: 1,
+			name: "seed",
+			key: "sk-seed",
+			group_id: 2,
+		});
+		const key = await h.daemon.route({ model: "target-model" });
+		expect(key?.groupId).toBe(2);
+		key?.release?.();
+		expect([...h.mock.keys.values()].map((item) => item.group_id)).toEqual([2]);
+	});
+
+	test("pool affinity and preferred-group continuity honor model filters", async () => {
+		h = createHarness({ configPatch: { keyMode: "pool" } });
+		h.mock.stats = [
+			makeStat({
+				groupId: 1,
+				supportedModels: ["other-model"],
+				modelAvailabilityKnown: true,
+			}),
+			makeStat({
+				groupId: 2,
+				supportedModels: ["target-model"],
+				modelAvailabilityKnown: true,
+			}),
+		];
+		await h.daemon.runOnce();
+		h.affinity.bind("affinity-model", 1);
+		const affinity = await h.daemon.route({
+			sessionKey: "affinity-model",
+			continuity: true,
+			model: "target-model",
+		});
+		expect(affinity?.groupId).toBe(2);
+		affinity?.release?.();
+		const preferred = await h.daemon.route({
+			preferredGroupId: 1,
+			continuity: true,
+			model: "target-model",
+		});
+		expect(preferred?.groupId).toBe(2);
+		preferred?.release?.();
+	});
+
+	test("half-open probes and failed-group retries skip incompatible groups", async () => {
+		h = createHarness({ configPatch: { keyMode: "pool" } });
+		h.mock.stats = [
+			makeStat({
+				groupId: 1,
+				supportedModels: ["other-model"],
+				modelAvailabilityKnown: true,
+			}),
+			makeStat({
+				groupId: 2,
+				supportedModels: ["target-model"],
+				modelAvailabilityKnown: true,
+			}),
+		];
+		const past = Date.now() - 31_000;
+		for (let index = 0; index < 3; index++)
+			h.breaker.recordFailure(1, past + index);
+		const probe = await h.daemon.route({ model: "target-model" });
+		expect(probe?.groupId).toBe(2);
+		probe?.release?.();
+		const retry = await h.daemon.route({
+			model: "target-model",
+			failedGroupIds: [1],
+		});
+		expect(retry?.groupId).toBe(2);
+		retry?.release?.();
+
+		h.daemon.resetAccountCaches();
+		h.mock.stats = [
+			makeStat({
+				groupId: 1,
+				supportedModels: ["target-model"],
+				modelAvailabilityKnown: true,
+			}),
+			makeStat({
+				groupId: 2,
+				supportedModels: ["target-model"],
+				modelAvailabilityKnown: true,
+			}),
+		];
+		await h.daemon.runOnce({ dryRun: true });
+		h.daemon.reportModelIncompatible(1, "target-model");
+		const learned = await h.daemon.route({ model: "target-model" });
+		expect(learned?.groupId).toBe(2);
+		learned?.release?.();
+	});
+
+	test("control policy changes invalidate cached allowed groups", async () => {
+		h = createHarness({
+			withServer: true,
+			configPatch: { keyMode: "pool", accountPoolPlans: ["plus"] },
+		});
+		h.mock.stats = [
+			makeStat({ groupId: 1, code: "A001-Plus" }),
+			makeStat({ groupId: 2, code: "A002-Pro" }),
+		];
+		const initial = await h.daemon.runOnce({ dryRun: true });
+		expect(initial.evaluation.eligible.map((candidate) => candidate.stat.groupId)).toEqual([1]);
+		const update = await fetch(`${h.serverUrl}/ctl/config`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ accountPoolPlans: ["pro"] }),
+		});
+		expect(update.status).toBe(200);
+		expect(h.config.accountPoolPlans).toEqual(["pro"]);
+		expect(h.daemon.lastRound?.evaluation.eligible.map((candidate) => candidate.stat.groupId)).toEqual([2]);
+	});
+
+	test("strict plans and known-empty model lists return no key or upstream access", async () => {
+		h = createHarness({
+			withServer: true,
+			configPatch: { keyMode: "pool", accountPoolPlans: ["plus"] },
+		});
+		h.mock.stats = [makeStat({ groupId: 1, code: "A001-Pro" })];
+		const planRound = await h.daemon.runOnce({ dryRun: true });
+		expect(planRound.evaluation.excluded[0]?.excludeReason).toBe("account_plan");
+		expect(await h.daemon.route({ model: "target-model" })).toBeUndefined();
+		const planResponse = await handleProxy(proxyReq(), h.proxyDeps);
+		expect(planResponse.status).toBe(503);
+		expect(await planResponse.text()).not.toContain("sk-");
+		expect(h.mock.requestLog.some((entry) => entry.path.startsWith("/v1/"))).toBe(false);
+		const planStatus = await fetch(`${h.serverUrl}/ctl/status`).then((response) => response.text());
+		expect(planStatus).toContain("account_plan");
+		expect(planStatus).not.toContain("sk-mock");
+
+		h.dispose();
+		h = createHarness({ withServer: true, configPatch: { keyMode: "pool" } });
+		h.mock.stats = [
+			makeStat({ groupId: 1, supportedModels: [], modelAvailabilityKnown: true }),
+			makeStat({ groupId: 2, supportedModels: [], modelAvailabilityKnown: true }),
+		];
+		await h.daemon.runOnce({ dryRun: true });
+		expect(await h.daemon.route({ model: "target-model" })).toBeUndefined();
+		const modelResponse = await handleProxy(
+			new Request("http://localhost/v1/chat/completions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ model: "target-model" }),
+			}),
+			h.proxyDeps,
+		);
+		expect(modelResponse.status).toBe(503);
+		expect(await modelResponse.text()).not.toContain("sk-");
+		expect(h.mock.requestLog.some((entry) => entry.path.startsWith("/v1/"))).toBe(false);
+		const modelStatus = await fetch(`${h.serverUrl}/ctl/status`).then((response) => response.text());
+		expect(modelStatus).not.toContain("sk-mock");
+	});
+
 	test("account switch resets account-plan eligibility cache", async () => {
 		h = createHarness({
 			configPatch: { keyMode: "pool", accountPoolPlans: ["plus"] },

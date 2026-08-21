@@ -1068,6 +1068,17 @@ describe("控制台 API", () => {
 		expect(ui).toContain("客户端 API Key 无需修改");
 		expect(ui).toContain("outboundProxyMode");
 		expect(ui).toContain("saveOutboundProxy");
+		expect(ui).toContain('id="accountPoolPlans"');
+		expect(ui).toContain('type="checkbox" value="plus"');
+		expect(ui).toContain('type="checkbox" value="pro"');
+		expect(ui).toContain('type="checkbox" value="team"');
+		expect(ui).toContain('accountPoolMode:"all"');
+		expect(ui).toContain('const priceBand=status.config.priceBand');
+		expect(ui).toContain('candidate.modelAvailabilityKnown===true');
+		expect(ui).toContain("倍率不限");
+		expect(ui).toContain("套餐池不匹配");
+		expect(ui).toContain("模型不可用");
+		expect(ui).toContain("模型运行时禁用");
 		expect(ui).toContain('id="testOutboundProxy"');
 		expect(ui).toContain('id="outboundProxyTestResult"');
 		expect(ui).toContain('role="status" aria-live="polite"');

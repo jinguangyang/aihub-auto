@@ -98,6 +98,138 @@ describe("出站代理连通性控制", () => {
 });
 
 describe("守护循环", () => {
+	test("account plan filters available groups and an empty plan list preserves legacy all", async () => {
+		h = createHarness({
+			configPatch: {
+				keyMode: "pool",
+				accountPoolMode: "all",
+				accountPoolPlans: ["plus"],
+			},
+		});
+		h.mock.stats = [
+			makeStat({
+				groupId: 1,
+				code: "A001-Plus",
+				rateMultiplier: 0.1,
+				avgTtftMs: 5_000,
+			}),
+			makeStat({
+				groupId: 2,
+				code: "A002-Pro",
+				rateMultiplier: 0.01,
+				avgTtftMs: 100,
+			}),
+			makeStat({
+				groupId: 8,
+				code: "A008-BugTeam",
+				rateMultiplier: 0.01,
+				avgTtftMs: 100,
+			}),
+		];
+		const filtered = await h.daemon.runOnce({ dryRun: true });
+		expect(filtered.evaluation.eligible.map((candidate) => candidate.stat.groupId)).toEqual([1]);
+		expect(
+			filtered.evaluation.excluded.find(
+				(candidate) => candidate.stat.groupId === 8,
+			)?.excludeReason,
+		).toBe("account_plan");
+
+		h.dispose();
+		h = createHarness({
+			configPatch: {
+				keyMode: "pool",
+				accountPoolMode: "all",
+				accountPoolPlans: [],
+			},
+		});
+		h.mock.stats = [
+			makeStat({ groupId: 1, code: "A001-Plus" }),
+			makeStat({ groupId: 2, code: "A002-Pro" }),
+		];
+		const unfiltered = await h.daemon.runOnce({ dryRun: true });
+		expect(unfiltered.evaluation.eligible.map((candidate) => candidate.stat.groupId)).toEqual([1, 2]);
+	});
+
+	test("model capability filters static providers and runtime blocks independently", async () => {
+		h = createHarness({ configPatch: { keyMode: "pool" } });
+		h.mock.stats = [
+			makeStat({
+				groupId: 1,
+				supportedModels: ["gpt-5"],
+				modelAvailabilityKnown: true,
+				rateMultiplier: 0.1,
+				avgTtftMs: 5_000,
+			}),
+			makeStat({
+				groupId: 2,
+				supportedModels: ["claude-*"],
+				modelAvailabilityKnown: true,
+				rateMultiplier: 0.01,
+				avgTtftMs: 100,
+			}),
+		];
+		await h.daemon.runOnce({ dryRun: true });
+		const staticallyCompatible = await h.daemon.route({ model: "gpt-5" });
+		expect(staticallyCompatible?.groupId).toBe(1);
+		staticallyCompatible?.release?.();
+
+		h.mock.stats = [
+			makeStat({
+				groupId: 1,
+				supportedModels: ["gpt-5"],
+				modelAvailabilityKnown: true,
+				rateMultiplier: 0.01,
+				avgTtftMs: 100,
+			}),
+			makeStat({
+				groupId: 2,
+				supportedModels: ["gpt-5"],
+				modelAvailabilityKnown: true,
+				rateMultiplier: 0.1,
+				avgTtftMs: 5_000,
+			}),
+		];
+		h.daemon.resetAccountCaches();
+		await h.daemon.runOnce({ dryRun: true });
+		h.daemon.reportModelIncompatible(1, "gpt-5");
+		const runtimeCompatible = await h.daemon.route({ model: "gpt-5" });
+		expect(runtimeCompatible?.groupId).toBe(2);
+		runtimeCompatible?.release?.();
+	});
+
+	test("account switch resets account-plan eligibility cache", async () => {
+		h = createHarness({
+			configPatch: { keyMode: "pool", accountPoolPlans: ["plus"] },
+		});
+		h.mock.stats = [makeStat({ groupId: 1 }), makeStat({ groupId: 2 })];
+		h.mock.groupNames.set(1, "A001-Plus");
+		h.mock.groupNames.set(2, "A002-Pro");
+		await h.daemon.runOnce();
+		expect(h.state.currentGroupId).toBe(1);
+
+		h.mock.groupNames.set(1, "A001-Pro");
+		h.mock.groupNames.set(2, "A002-Plus");
+		await h.accountSwitcher.login({ token: "account-two-token" });
+		expect(h.state.currentGroupId).toBe(2);
+	});
+
+	test("account refresh failures retain cached eligibility and mark the round stale", async () => {
+		h = createHarness({
+			configPatch: { keyMode: "pool", accountPoolPlans: ["plus"] },
+		});
+		h.mock.stats = [makeStat({ groupId: 1, code: "A001-Plus" })];
+		await h.daemon.runOnce({ dryRun: true });
+
+		h.mock.stats = [
+			makeStat({ groupId: 1, code: "A001-Plus" }),
+			makeStat({ groupId: 2, code: "A002-Plus" }),
+		];
+		h.mock.availableGroupsStatus = 503;
+		const round = await h.daemon.runOnce({ dryRun: true });
+		expect(round.stale).toBe(true);
+		expect(round.evaluation.eligible.map((candidate) => candidate.stat.groupId)).toEqual([1]);
+	});
+
 	test("冷启动:选最优组并执行(pool 建 Key)", async () => {
 		h = createHarness({ configPatch: { keyMode: "pool" } });
 		h.mock.stats = [
@@ -966,7 +1098,7 @@ describe("控制台 API", () => {
 		});
 		expect(cfgRes.status).toBe(200);
 		expect(h.config.mode).toBe("speed");
-		expect(h.config.priceBand.max).toBe(0.3);
+		expect(h.config.priceBand?.max).toBe(0.3);
 
 		h.config.economyPolicy = {
 			minOutcomeSamples: 9,

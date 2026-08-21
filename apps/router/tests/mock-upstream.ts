@@ -32,6 +32,7 @@ export interface MockBehavior {
 export class MockAIHub {
 	server: ReturnType<typeof Bun.serve>;
 	stats: GroupStat[] = [];
+	groupNames = new Map<number, string>();
 	keys = new Map<number, MockKey>();
 	behavior: MockBehavior = { groups: new Map() };
 	nextKeyId = 1;
@@ -43,6 +44,8 @@ export class MockAIHub {
 	}[] = [];
 	loginCalls = 0;
 	refreshCalls = 0;
+	availableGroupsStatus: number | undefined;
+	groupRatesStatus: number | undefined;
 	/** 强制业务接口返回 401(模拟 token 过期);refresh 后復位 */
 	expireToken = false;
 	meDelayMs = 0;
@@ -130,6 +133,9 @@ export class MockAIHub {
 					user_avg_ttft_ms: stat.userAvgTtftMs ?? 0,
 					user_sample_count: stat.userSampleCount ?? 0,
 					user_has_data: stat.userAvgTtftMs !== undefined,
+					...(stat.modelAvailabilityKnown === true
+						? { models: stat.supportedModels ?? [] }
+						: {}),
 				})),
 			});
 		}
@@ -164,6 +170,12 @@ export class MockAIHub {
 
 		// ---- 账号可用组/倍率 ----
 		if (path === "/api/v1/groups/available") {
+			if (this.availableGroupsStatus !== undefined) {
+				return this.json(
+					{ code: 1, message: "available groups unavailable" },
+					this.availableGroupsStatus,
+				);
+			}
 			if (this.expireToken)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
 			if (!this.accountFor(auth))
@@ -172,13 +184,19 @@ export class MockAIHub {
 				...new Map(this.stats.map((stat) => [stat.groupId, stat])).values(),
 			].map((stat) => ({
 				id: stat.groupId,
-				name: stat.code,
+				name: this.groupNames.get(stat.groupId) ?? stat.code,
 				platform: stat.platform,
 				rate_multiplier: stat.rateMultiplier,
 			}));
 			return this.envelope(groups);
 		}
 		if (path === "/api/v1/groups/rates") {
+			if (this.groupRatesStatus !== undefined) {
+				return this.json(
+					{ code: 1, message: "group rates unavailable" },
+					this.groupRatesStatus,
+				);
+			}
 			if (this.expireToken)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
 			if (!this.accountFor(auth))

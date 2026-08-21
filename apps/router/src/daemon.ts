@@ -109,6 +109,7 @@ export class RouteDaemon {
 	private userRates: Map<number, number> | undefined;
 	private accountDataAt = 0;
 	private accountDataGroupSet: Set<number> | undefined;
+	private accountDataStale = false;
 	private readonly lastProviders = new Map<
 		Platform,
 		{ providers: Map<number, ProviderLatencyStat>; at: number }
@@ -144,6 +145,7 @@ export class RouteDaemon {
 				let providers = providersFresh
 					? cachedProviders.providers
 					: new Map<number, ProviderLatencyStat>();
+				let providersStale = false;
 				if (!providersFresh) {
 					try {
 						providers =
@@ -153,6 +155,7 @@ export class RouteDaemon {
 							at: Date.now(),
 						});
 					} catch (err) {
+						providersStale = true;
 						this.deps.logger.debug(
 							`provider TTFT 拉取失败(${platform}),回退 usage-stats:${err instanceof Error ? err.message : ""}`,
 						);
@@ -163,7 +166,7 @@ export class RouteDaemon {
 				}
 				const items = mergeProviderLatencies(page.items, providers);
 				this.lastStats.set(platform, { items, at: Date.now() });
-				return { items, stale: false };
+				return { items, stale: providersStale };
 			} catch (err) {
 				const cached = this.lastStats.get(platform);
 				this.deps.logger.warn(
@@ -182,6 +185,10 @@ export class RouteDaemon {
 		statsGroupIds: Set<number>,
 		force = false,
 	): Promise<void> {
+		const accountPoolFilterActive = this.accountPoolFilterActive();
+		if (accountPoolFilterActive && this.allowedGroupIds === undefined) {
+			this.allowedGroupIds = [];
+		}
 		if (!this.deps.credentials.accessToken) return;
 		const withinTtl =
 			Date.now() - this.accountDataAt <
@@ -194,15 +201,32 @@ export class RouteDaemon {
 			this.deps.client.getAvailableGroups(),
 			this.deps.client.getUserGroupRates(),
 		]);
-		if (groups.status === "fulfilled") {
+		this.accountDataStale =
+			groups.status !== "fulfilled" || rates.status !== "fulfilled";
+		if (groups.status === "fulfilled" && rates.status === "fulfilled") {
 			this.allowedGroupIds = groups.value
-				.filter((group) => !group.platform || group.platform === "openai")
+				.filter(
+					(group) =>
+						(!group.platform || group.platform === "openai") &&
+						matchesAccountPool(
+							group.name,
+							this.deps.config.accountPoolPlans,
+							this.deps.config.accountPoolMode,
+						),
+				)
 				.map((group) => group.id)
 				.filter((id) => Number.isInteger(id) && id > 0);
+			this.userRates = rates.value;
 		}
-		if (rates.status === "fulfilled") this.userRates = rates.value;
 		this.accountDataAt = Date.now();
 		this.accountDataGroupSet = new Set(statsGroupIds);
+	}
+
+	private accountPoolFilterActive(): boolean {
+		return (
+			this.deps.config.accountPoolPlans.length > 0 ||
+			this.deps.config.accountPoolMode !== "all"
+		);
 	}
 
 	private breakerGroupIds(now: number, allowHalfOpen: boolean): number[] {
@@ -221,15 +245,20 @@ export class RouteDaemon {
 		now: number,
 		extraBlacklist: readonly number[] = [],
 		allowHalfOpen = false,
+		model?: string,
+		modelBlockedGroupIds: readonly number[] = [],
 	): ScoringOptions {
 		const config = this.deps.config;
 		return {
 			mode: config.mode,
-			priceBand: config.priceBand,
+			priceBand: config.priceBand ?? { min: 0, max: Number.MAX_VALUE },
 			blacklist: [...config.blacklist, ...extraBlacklist],
 			circuitOpenGroupIds: this.breakerGroupIds(now, allowHalfOpen),
 			economyPolicy: config.economyPolicy,
 			allowedGroupIds: this.allowedGroupIds,
+			accountPoolFilterActive: this.accountPoolFilterActive(),
+			model,
+			modelBlockedGroupIds,
 			errorRateCap: config.errorRateCap,
 			platform,
 			now,
@@ -241,10 +270,19 @@ export class RouteDaemon {
 		now: number,
 		extraBlacklist: readonly number[] = [],
 		allowHalfOpen = false,
+		model?: string,
+		modelBlockedGroupIds: readonly number[] = [],
 	): Evaluation {
 		return evaluate(
 			items,
-			this.scoringOptions("openai", now, extraBlacklist, allowHalfOpen),
+			this.scoringOptions(
+				"openai",
+				now,
+				extraBlacklist,
+				allowHalfOpen,
+				model,
+				modelBlockedGroupIds,
+			),
 			this.deps.observations.asMap(now),
 			this.userRates,
 		);
@@ -316,6 +354,7 @@ export class RouteDaemon {
 		this.userRates = undefined;
 		this.accountDataAt = 0;
 		this.accountDataGroupSet = undefined;
+		this.accountDataStale = false;
 		this.lastProviders.clear();
 		this.lastStats.clear();
 		this.lastRound = undefined;
@@ -399,8 +438,9 @@ export class RouteDaemon {
 	}): Promise<RoundResult> {
 		const now = Date.now();
 		const platform = opts?.platform ?? "openai";
-		const { items, stale } = await this.fetchStats(platform);
+		const { items, stale: statsStale } = await this.fetchStats(platform);
 		await this.refreshAccountData(new Set(items.map((item) => item.groupId)));
+		const stale = statsStale || this.accountDataStale;
 		const evaluation = this.evaluate(items, now);
 		const routeState: RouteState = {
 			currentGroupId: this.deps.state.currentGroupId,
@@ -565,15 +605,21 @@ export class RouteDaemon {
 		const now = Date.now();
 		const items = await this.routingItems();
 		const blocked = new Set(request.failedGroupIds ?? []);
-		for (const groupId of this.modelBlockedGroupIds(request.model, now)) {
-			blocked.add(groupId);
-		}
+		const modelBlocked = this.modelBlockedGroupIds(request.model, now);
 		const current = this.deps.executor.currentKey();
 		const lockedGroupId = this.deps.state.manualLock.groupId;
 		if (
 			lockedGroupId !== null &&
 			!blocked.has(lockedGroupId) &&
-			this.hardEligible(lockedGroupId, items, blocked, now) &&
+			this.hardEligible(
+				lockedGroupId,
+				items,
+				blocked,
+				now,
+				false,
+				request.model,
+				modelBlocked,
+			) &&
 			this.deps.breaker.allowRequest(lockedGroupId, now)
 		) {
 			if (current?.groupId === lockedGroupId) return current;
@@ -586,14 +632,29 @@ export class RouteDaemon {
 		}
 		if (
 			current &&
-			this.hardEligible(current.groupId, items, blocked, now) &&
+			this.hardEligible(
+				current.groupId,
+				items,
+				blocked,
+				now,
+				false,
+				request.model,
+				modelBlocked,
+			) &&
 			this.deps.breaker.allowRequest(current.groupId, now)
 		) {
 			return current;
 		}
 
 		for (;;) {
-			const evaluation = this.evaluate(items, now, [...blocked], true);
+			const evaluation = this.evaluate(
+				items,
+				now,
+				[...blocked],
+				true,
+				request.model,
+				modelBlocked,
+			);
 			const target = evaluation.eligible.find((candidate) =>
 				Number.isFinite(candidate.score),
 			);
@@ -617,9 +678,7 @@ export class RouteDaemon {
 		const now = Date.now();
 		const items = await this.routingItems();
 		const failed = new Set(request.failedGroupIds ?? []);
-		for (const groupId of this.modelBlockedGroupIds(request.model, now)) {
-			failed.add(groupId);
-		}
+		const modelBlocked = this.modelBlockedGroupIds(request.model, now);
 		const cacheLikelyHot = Boolean(
 			request.sessionKey &&
 				request.cacheEvidence &&
@@ -638,7 +697,15 @@ export class RouteDaemon {
 		if (
 			preserveBinding &&
 			affinityGroupId !== undefined &&
-			this.hardEligible(affinityGroupId, items, failed, now) &&
+			this.hardEligible(
+				affinityGroupId,
+				items,
+				failed,
+				now,
+				false,
+				request.model,
+				modelBlocked,
+			) &&
 			this.deps.breaker.allowRequest(affinityGroupId, now)
 		) {
 			return this.prepareRequestKey(
@@ -653,7 +720,15 @@ export class RouteDaemon {
 		if (
 			lockedGroupId !== null &&
 			!failed.has(lockedGroupId) &&
-			this.hardEligible(lockedGroupId, items, failed, now) &&
+			this.hardEligible(
+				lockedGroupId,
+				items,
+				failed,
+				now,
+				false,
+				request.model,
+				modelBlocked,
+			) &&
 			this.deps.breaker.allowRequest(lockedGroupId, now)
 		) {
 			return this.prepareRequestKey(
@@ -665,14 +740,28 @@ export class RouteDaemon {
 		}
 
 		const blocked = new Set(failed);
-		const probe = this.halfOpenProbe(items, blocked, now, request.sessionKey);
+		const probe = this.halfOpenProbe(
+			items,
+			blocked,
+			now,
+			request.sessionKey,
+			request.model,
+			modelBlocked,
+		);
 		if (probe !== undefined && this.deps.breaker.allowRequest(probe, now)) {
 			return this.prepareRequestKey(probe, request, previousGroupId, now);
 		}
 
 		let target: ScoredCandidate | undefined;
 		for (;;) {
-			const evaluation = this.evaluate(items, now, [...blocked]);
+			const evaluation = this.evaluate(
+				items,
+				now,
+				[...blocked],
+				false,
+				request.model,
+				modelBlocked,
+			);
 			target = this.selectP2c(evaluation, request.sessionKey ?? randomUUID());
 			if (!target) break;
 			if (this.deps.breaker.allowRequest(target.stat.groupId, now)) break;
@@ -684,7 +773,15 @@ export class RouteDaemon {
 			const fallback = this.deps.state.currentGroupId;
 			if (
 				fallback === undefined ||
-				!this.hardEligible(fallback, items, blocked, now) ||
+				!this.hardEligible(
+					fallback,
+					items,
+					blocked,
+					now,
+					false,
+					request.model,
+					modelBlocked,
+				) ||
 				!this.deps.breaker.allowRequest(fallback, now)
 			) {
 				return undefined;
@@ -706,6 +803,8 @@ export class RouteDaemon {
 		blocked: ReadonlySet<number>,
 		now: number,
 		probe = false,
+		model?: string,
+		modelBlockedGroupIds: readonly number[] = [],
 	): boolean {
 		const observations = this.deps.observations.asMap(now);
 		if (probe) {
@@ -722,7 +821,14 @@ export class RouteDaemon {
 		return evaluate(
 			[...items],
 			{
-				...this.scoringOptions("openai", now, [...blocked], true),
+				...this.scoringOptions(
+					"openai",
+					now,
+					[...blocked],
+					true,
+					model,
+					modelBlockedGroupIds,
+				),
 				mode: "balanced",
 			},
 			observations,
@@ -734,6 +840,8 @@ export class RouteDaemon {
 		items: readonly GroupStat[],
 		blocked: ReadonlySet<number>,
 		now: number,
+		model?: string,
+		modelBlockedGroupIds: readonly number[] = [],
 	): ScoredCandidate | undefined {
 		const groupId = this.deps.state.manualLock.groupId;
 		if (groupId === null || blocked.has(groupId)) return undefined;
@@ -742,7 +850,14 @@ export class RouteDaemon {
 		return evaluate(
 			[target],
 			{
-				...this.scoringOptions("openai", now, [...blocked], true),
+				...this.scoringOptions(
+					"openai",
+					now,
+					[...blocked],
+					true,
+					model,
+					modelBlockedGroupIds,
+				),
 				mode: "balanced",
 			},
 			this.deps.observations.asMap(now),
@@ -835,6 +950,8 @@ export class RouteDaemon {
 		blocked: ReadonlySet<number>,
 		now: number,
 		seed: string = randomUUID(),
+		model?: string,
+		modelBlockedGroupIds: readonly number[] = [],
 	): number | undefined {
 		const candidates = this.deps.breaker
 			.snapshot(now)
@@ -842,7 +959,15 @@ export class RouteDaemon {
 				(entry) =>
 					entry.state === "half-open" &&
 					!blocked.has(entry.groupId) &&
-					this.hardEligible(entry.groupId, items, blocked, now, true),
+					this.hardEligible(
+						entry.groupId,
+						items,
+						blocked,
+						now,
+						true,
+						model,
+						modelBlockedGroupIds,
+					),
 			)
 			.sort(
 				(left, right) =>

@@ -4,6 +4,84 @@ import type { GroupStat, LocalObservation } from "../src/index.ts";
 import { NOW, opts, stat } from "./helpers.ts";
 
 describe("硬过滤", () => {
+	test("model capabilities support exact case-insensitive and trailing wildcard matches", () => {
+		const ev = evaluate(
+			[
+				stat({
+					groupId: 1,
+					supportedModels: [" gPt-4O-MINI "],
+					modelAvailabilityKnown: true,
+				}),
+				stat({
+					groupId: 2,
+					supportedModels: ["GPT-4O-*"],
+					modelAvailabilityKnown: true,
+				}),
+				stat({
+					groupId: 3,
+					supportedModels: [],
+					modelAvailabilityKnown: true,
+				}),
+				stat({ groupId: 4 }),
+			],
+			opts({ model: "gpt-4o-mini" }),
+		);
+		expect(ev.eligible.map((candidate) => candidate.stat.groupId)).toEqual([
+			1,
+			2,
+			4,
+		]);
+		expect(ev.excluded).toContainEqual(
+			expect.objectContaining({
+				stat: expect.objectContaining({ groupId: 3 }),
+				excludeReason: "model_unavailable",
+			}),
+		);
+	});
+
+	test("account pool misses use account_plan while legacy allowed-group misses remain unavailable", () => {
+		const poolFiltered = evaluate(
+			[stat({ groupId: 1 })],
+			opts({ allowedGroupIds: [2], accountPoolFilterActive: true }),
+		);
+		expect(poolFiltered.excluded[0]?.excludeReason).toBe("account_plan");
+
+		const legacy = evaluate(
+			[stat({ groupId: 1 })],
+			opts({ allowedGroupIds: [2] }),
+		);
+		expect(legacy.excluded[0]?.excludeReason).toBe("unavailable_group");
+	});
+
+	test("model blocks precede account-plan and rate checks", () => {
+		const ev = evaluate(
+			[stat({ groupId: 1, rateMultiplier: Number.NaN })],
+			opts({
+				allowedGroupIds: [],
+				accountPoolFilterActive: true,
+				modelBlockedGroupIds: [1],
+			}),
+		);
+		expect(ev.excluded[0]?.excludeReason).toBe("model_blocked");
+	});
+
+	test("platform and provider availability keep precedence over model policy", () => {
+		const ev = evaluate(
+			[
+				stat({ groupId: 1, platform: "invalid" as never }),
+				stat({ groupId: 2, providerAvailable: false }),
+			],
+			opts({
+				model: "gpt-4o",
+				modelBlockedGroupIds: [1, 2],
+			}),
+		);
+		expect(ev.excluded).toEqual([
+			expect.objectContaining({ excludeReason: "platform_mismatch" }),
+			expect.objectContaining({ excludeReason: "unavailable_group" }),
+		]);
+	});
+
 	test("平台不匹配被排除", () => {
 		const ev = evaluate(
 			[stat({ groupId: 1, platform: "invalid" as never })],

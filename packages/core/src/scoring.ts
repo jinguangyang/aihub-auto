@@ -43,6 +43,21 @@ function geometricMean(values: readonly number[]): number | undefined {
 	);
 }
 
+function supportsModel(
+	models: readonly string[] | undefined,
+	requested: string,
+): boolean {
+	if (!models) return true;
+	const target = requested.trim().toLowerCase();
+	return models.some((model) => {
+		const candidate = model.trim().toLowerCase();
+		return (
+			candidate === target ||
+			(candidate.endsWith("*") && target.startsWith(candidate.slice(0, -1)))
+		);
+	});
+}
+
 /**
  * 硬约束 + 官网用户/云端探测/本地三源对数融合 + 失败/尾延迟风险修正。
  * 缺失来源不占权重;本地证据按实时置信度逐步接管上游基线。
@@ -57,6 +72,7 @@ export function evaluate(
 	const excluded: ExcludedCandidate[] = [];
 	const blacklist = new Set(options.blacklist);
 	const circuitOpen = new Set(options.circuitOpenGroupIds);
+	const modelBlocked = new Set(options.modelBlockedGroupIds);
 	const allowed = options.allowedGroupIds
 		? new Set(options.allowedGroupIds)
 		: undefined;
@@ -106,11 +122,31 @@ export function evaluate(
 			excluded.push(exclude(stat, "platform_mismatch"));
 			continue;
 		}
-		if (
-			stat.providerAvailable === false ||
-			(allowed && !allowed.has(stat.groupId))
-		) {
+		if (stat.providerAvailable === false) {
 			excluded.push(exclude(stat, "unavailable_group"));
+			continue;
+		}
+		if (modelBlocked.has(stat.groupId)) {
+			excluded.push(exclude(stat, "model_blocked"));
+			continue;
+		}
+		if (allowed && !allowed.has(stat.groupId)) {
+			excluded.push(
+				exclude(
+					stat,
+					options.accountPoolFilterActive === true
+						? "account_plan"
+						: "unavailable_group",
+				),
+			);
+			continue;
+		}
+		if (
+			options.model &&
+			stat.modelAvailabilityKnown === true &&
+			!supportsModel(stat.supportedModels, options.model)
+		) {
+			excluded.push(exclude(stat, "model_unavailable"));
 			continue;
 		}
 

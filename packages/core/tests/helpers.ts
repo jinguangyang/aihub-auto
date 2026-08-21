@@ -18,6 +18,9 @@ export function stat(partial: Partial<GroupStat> & { groupId: number }): GroupSt
 export function opts(partial?: Partial<ScoringOptions>): ScoringOptions {
   return {
     mode: "balanced",
+    model: undefined,
+    modelBlockedGroupIds: [],
+    accountPoolFilterActive: false,
     priceBand: { ...DEFAULT_PRICE_BAND },
     blacklist: [],
     errorRateCap: DEFAULT_ERROR_RATE_CAP,

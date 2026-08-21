@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { AIHubApiError, AIHubClient } from "../src/index.ts";
+import {
+	AIHubApiError,
+	AIHubClient,
+	mergeProviderLatencies,
+	parseGroupStat,
+} from "../src/index.ts";
 import fixtureOpenai from "./fixtures/usage-stats-openai.json";
 
 function mockFetch(
@@ -17,6 +22,36 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe("AIHubClient.getUsageStats", () => {
+	test("parses group model capabilities and preserves unknown fields", () => {
+		expect(
+			parseGroupStat({
+				code: "model-group",
+				platform: "openai",
+				group_id: 1,
+				models: [" gpt-4o ", { model: "o1" }, { name: "o3" }, { id: "gpt-5" }],
+			}),
+		).toMatchObject({
+			supportedModels: ["gpt-4o", "o1", "o3", "gpt-5"],
+			modelAvailabilityKnown: true,
+		});
+		expect(
+			parseGroupStat({
+				code: "unknown-models",
+				platform: "openai",
+				group_id: 2,
+				models: "not-an-array",
+				supported_models: ["must-not-win"],
+			}),
+		).not.toHaveProperty("modelAvailabilityKnown");
+		expect(
+			parseGroupStat({
+				code: "missing-models",
+				platform: "openai",
+				group_id: 3,
+			}),
+		).not.toHaveProperty("modelAvailabilityKnown");
+	});
+
 	test("解析真实响应样本(envelope + snake_case)", async () => {
 		const client = new AIHubClient({
 			baseUrl: "https://aihub.top/",
@@ -123,6 +158,12 @@ describe("AIHubClient.getProviderLatencyStats", () => {
 								user_avg_ttft_ms: 2400,
 								user_sample_count: 50,
 								user_has_data: true,
+								models: [
+									" gpt-4o ",
+									{ model: "o1" },
+									{ name: "o3" },
+									{ id: "gpt-5" },
+								],
 							},
 							{
 								group_id: 4,
@@ -132,6 +173,7 @@ describe("AIHubClient.getProviderLatencyStats", () => {
 								user_avg_ttft_ms: 0,
 								user_sample_count: 0,
 								user_has_data: false,
+								supported_models: [],
 							},
 							{
 								group_id: 5,
@@ -140,6 +182,28 @@ describe("AIHubClient.getProviderLatencyStats", () => {
 								probe_e2e_ttft_ms: 0,
 								probe_ttft_ms: 700,
 								user_has_data: false,
+								available_models: ["claude-3-5-sonnet"],
+							},
+							{
+								group_id: 6,
+								platform: "openai",
+								model_names: [{ name: "gemini-2.5-pro" }],
+							},
+							{
+								group_id: 7,
+								platform: "openai",
+							},
+							{
+								group_id: 8,
+								platform: "openai",
+								models: "not-an-array",
+								supported_models: ["must-not-win"],
+							},
+							{
+								group_id: 9,
+								platform: "openai",
+								models: ["first-field"],
+								supported_models: ["second-field"],
 							},
 						],
 					},
@@ -154,6 +218,8 @@ describe("AIHubClient.getProviderLatencyStats", () => {
 			cloudProbeTtftMs: 1200,
 			userAvgTtftMs: 2400,
 			userSampleCount: 50,
+			supportedModels: ["gpt-4o", "o1", "o3", "gpt-5"],
+			modelAvailabilityKnown: true,
 		});
 		expect(providers.get(4)).toEqual({
 			groupId: 4,
@@ -162,10 +228,60 @@ describe("AIHubClient.getProviderLatencyStats", () => {
 			cloudProbeTtftMs: undefined,
 			userAvgTtftMs: undefined,
 			userSampleCount: 0,
+			supportedModels: [],
+			modelAvailabilityKnown: true,
 		});
 		expect(providers.get(5)).toEqual(
-			expect.objectContaining({ available: true, cloudProbeTtftMs: 700 }),
+			expect.objectContaining({
+				available: true,
+				cloudProbeTtftMs: 700,
+				supportedModels: ["claude-3-5-sonnet"],
+				modelAvailabilityKnown: true,
+			}),
 		);
+		expect(providers.get(6)).toMatchObject({
+			supportedModels: ["gemini-2.5-pro"],
+			modelAvailabilityKnown: true,
+		});
+		expect(providers.get(7)).not.toHaveProperty("modelAvailabilityKnown");
+		expect(providers.get(8)).not.toHaveProperty("modelAvailabilityKnown");
+		expect(providers.get(9)).toMatchObject({
+			supportedModels: ["first-field"],
+			modelAvailabilityKnown: true,
+		});
+	});
+
+	test("known provider capability overlays group capability only when present", () => {
+		const group = parseGroupStat({
+			code: "group",
+			platform: "openai",
+			group_id: 1,
+			models: ["group-model"],
+		})!;
+		const unknownProvider = new Map([
+			[1, { groupId: 1, platform: "openai" as const, userSampleCount: 0 }],
+		]);
+		expect(mergeProviderLatencies([group], unknownProvider)[0]).toMatchObject({
+			supportedModels: ["group-model"],
+			modelAvailabilityKnown: true,
+		});
+
+		const knownProvider = new Map([
+			[
+				1,
+				{
+					groupId: 1,
+					platform: "openai" as const,
+					userSampleCount: 0,
+					supportedModels: [],
+					modelAvailabilityKnown: true,
+				},
+			],
+		]);
+		expect(mergeProviderLatencies([group], knownProvider)[0]).toMatchObject({
+			supportedModels: [],
+			modelAvailabilityKnown: true,
+		});
 	});
 });
 

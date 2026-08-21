@@ -7,6 +7,8 @@ export const PLATFORMS: readonly Platform[] = ["openai"];
 export interface GroupStat {
 	code: string;
 	platform: Platform;
+	supportedModels?: string[];
+	modelAvailabilityKnown?: boolean;
 	rateMultiplier: number;
 	/** 旧 usage-stats 的真实请求平均 TTFT;新接口缺失时作为用户均值回退。 */
 	avgTtftMs: number;
@@ -33,6 +35,8 @@ export interface UsageStatsPage {
 export interface ProviderLatencyStat {
 	groupId: number;
 	platform: Platform;
+	supportedModels?: string[];
+	modelAvailabilityKnown?: boolean;
 	available?: boolean;
 	cloudProbeTtftMs?: number;
 	userAvgTtftMs?: number;
@@ -116,6 +120,9 @@ export interface LocalObservation {
 
 export interface ScoringOptions {
 	mode: RoutingMode;
+	model?: string;
+	modelBlockedGroupIds?: readonly number[];
+	accountPoolFilterActive?: boolean;
 	/** 生效倍率硬约束区间(含边界) */
 	priceBand: { min: number; max: number };
 	/** 用户明确配置的 groupId 黑名单。 */
@@ -137,6 +144,9 @@ export interface ScoringOptions {
 export type ExcludeReason =
 	| "platform_mismatch"
 	| "unavailable_group"
+	| "account_plan"
+	| "model_unavailable"
+	| "model_blocked"
 	| "invalid_rate"
 	| "price_band"
 	| "blacklisted"

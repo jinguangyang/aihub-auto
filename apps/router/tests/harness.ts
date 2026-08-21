@@ -224,6 +224,7 @@ export function createHarness(opts?: {
 	if (opts?.withServer) {
 		const serverDeps: ServerDeps = {
 			config,
+			activeBaseUrl: mock.url,
 			state,
 			credentials,
 			client,

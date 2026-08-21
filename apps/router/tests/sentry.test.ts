@@ -80,6 +80,32 @@ describe("Sentry 过滤边界", () => {
 		).toThrow();
 	});
 
+	test("AIHub source accepts HTTPS origins and loopback HTTP only", () => {
+		expect(ConfigSchema.parse({ baseUrl: "https://aihub.dog" }).baseUrl).toBe(
+			"https://aihub.dog",
+		);
+		expect(ConfigSchema.parse({ baseUrl: "https://aihub.dog/" }).baseUrl).toBe(
+			"https://aihub.dog",
+		);
+		expect(
+			ConfigSchema.parse({ baseUrl: "http://127.0.0.1:8787" }).baseUrl,
+		).toBe("http://127.0.0.1:8787");
+		expect(
+			ConfigSchema.parse({ baseUrl: "http://localhost:8787" }).baseUrl,
+		).toBe("http://localhost:8787");
+
+		for (const baseUrl of [
+			"http://aihub.dog",
+			"https://aihub.dog/path",
+			"https://aihub.dog?query=1",
+			"https://aihub.dog/#fragment",
+			"https://user:secret@aihub.dog",
+			"file:///tmp/aihub",
+		]) {
+			expect(() => ConfigSchema.parse({ baseUrl })).toThrow();
+		}
+	});
+
 	test("publicOrigin 只接受无路径的完整 HTTP(S) origin", () => {
 		expect(
 			ConfigSchema.parse({ publicOrigin: "https://router.example" })

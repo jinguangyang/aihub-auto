@@ -328,6 +328,7 @@ async function main(): Promise<void> {
 	try {
 		server = createServer({
 			config,
+			activeBaseUrl: config.baseUrl,
 			state,
 			credentials,
 			accounts,
@@ -348,7 +349,7 @@ async function main(): Promise<void> {
 			desktopMode: process.env["AIHUB_AUTO_DESKTOP"] === "1",
 			syncSentryUser,
 			probeOutboundProxy: (settings) =>
-				probeAIHubConnectivity(settings, { baseUrl: config.baseUrl }),
+				probeAIHubConnectivity(settings, { baseUrl: proxyDeps.baseUrl }),
 		});
 	} catch (err) {
 		logger.error(

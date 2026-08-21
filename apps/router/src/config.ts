@@ -110,6 +110,37 @@ function validateOutboundProxy(
 	}
 }
 
+export function isAllowedUpstreamOrigin(value: string): boolean {
+	try {
+		const url = new URL(value);
+		const loopback =
+			url.hostname === "127.0.0.1" ||
+			url.hostname === "[::1]" ||
+			url.hostname === "localhost";
+		const canonicalInput = value.endsWith("/") ? value.slice(0, -1) : value;
+		return (
+			(url.protocol === "https:" || (url.protocol === "http:" && loopback)) &&
+			!url.username &&
+			!url.password &&
+			!url.search &&
+			!url.hash &&
+			canonicalInput === url.origin
+		);
+	} catch {
+		return false;
+	}
+}
+
+export const UpstreamBaseUrlSchema = z
+	.string()
+	.url()
+	.max(2048)
+	.refine(
+		isAllowedUpstreamOrigin,
+		"AIHub source must be a complete HTTPS origin without path, query, or credentials",
+	)
+	.transform((value) => new URL(value).origin);
+
 function validatePriceBand(
 	config: { priceBand: { min: number; max: number } | null },
 	ctx: z.RefinementCtx,
@@ -134,7 +165,7 @@ export const OutboundProxyConfigSchema = z
 export const ConfigSchema = z
 	.object({
 	/** AIHub 站点(sub2api),usage-stats 为 aihub 自有接口 */
-	baseUrl: z.string().url().default("https://aihub.top"),
+	baseUrl: UpstreamBaseUrlSchema.default("https://aihub.top"),
 	/** 可信反向代理对外 origin;空字符串表示不接受跨 origin 控制台请求。 */
 	publicOrigin: PublicOriginSchema.default(""),
 	/** Sentry 公共 DSN;留空时后端 SDK 与网页反馈均不加载。 */

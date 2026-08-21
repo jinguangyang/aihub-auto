@@ -34,6 +34,8 @@ import {
 
 export interface ServerDeps {
 	config: AppConfig;
+	/** AIHub origin captured at process startup; config.baseUrl may be pending restart. */
+	activeBaseUrl: string;
 	state: AppState;
 	credentials: Credentials;
 	accounts: Accounts;
@@ -686,6 +688,12 @@ export async function handleControl(
 			currentGroupId: deps.state.currentGroupId ?? null,
 			currentCode: currentCode ?? null,
 			config: {
+				baseUrl: deps.activeBaseUrl,
+				pendingBaseUrl:
+					deps.config.baseUrl === deps.activeBaseUrl
+						? null
+						: deps.config.baseUrl,
+				restartRequired: deps.config.baseUrl !== deps.activeBaseUrl,
 				listen: deps.config.listen,
 				proxyAuthRequired: Boolean(deps.config.proxyToken),
 				uiAuthRequired: Boolean(deps.config.uiPassword),
@@ -807,16 +815,17 @@ export async function handleControl(
 		} catch {
 			return json({ error: "非法 JSON" }, 400);
 		}
-		const restartRequired = ["keyMode", "poolMaxGroups"].filter(
+		const blockedRestartFields = ["keyMode", "poolMaxGroups"].filter(
 			(key) => key in patch,
 		);
-		if (restartRequired.length > 0) {
+		if (blockedRestartFields.length > 0) {
 			return json(
-				{ error: `${restartRequired.join(", ")} 只能修改配置文件并重启生效` },
+				{ error: `${blockedRestartFields.join(", ")} 只能修改配置文件并重启生效` },
 				409,
 			);
 		}
 		const allowed = [
+			"baseUrl",
 			"mode",
 			"accountPoolMode",
 			"accountPoolPlans",
@@ -870,12 +879,28 @@ export async function handleControl(
 			Object.assign(deps.config, parsed.data);
 			await deps.persistConfig();
 			if (poolPolicyChanged) deps.daemon.resetAccountCaches();
-			return { ok: true as const };
+			return {
+				ok: true as const,
+				restartRequired: parsed.data.baseUrl !== deps.activeBaseUrl,
+				pendingBaseUrl:
+					parsed.data.baseUrl === deps.activeBaseUrl
+						? null
+						: parsed.data.baseUrl,
+			};
 		});
 		if (!configUpdate.ok) return json({ error: configUpdate.error }, 400);
+		if (configUpdate.restartRequired) {
+			return json({
+				ok: true,
+				restartRequired: true,
+				pendingBaseUrl: configUpdate.pendingBaseUrl,
+			});
+		}
 		const round = await deps.daemon.runOnce();
 		return json({
 			ok: true,
+			restartRequired: configUpdate.restartRequired,
+			pendingBaseUrl: configUpdate.pendingBaseUrl,
 			decision: round.decision,
 			executed: round.executed,
 		});

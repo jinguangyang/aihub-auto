@@ -1162,6 +1162,9 @@ describe("控制台 API", () => {
 			}>;
 			hasToken: boolean;
 			config: {
+				baseUrl: string;
+				pendingBaseUrl: string | null;
+				restartRequired: boolean;
 				listen: { host: string; port: number };
 				proxyAuthRequired: boolean;
 				uiAuthRequired: boolean;
@@ -1193,6 +1196,9 @@ describe("控制台 API", () => {
 		expect(status.hasToken).toBe(true);
 		expect(status.desktopMode).toBe(false);
 		expect(status.config).toMatchObject({
+			baseUrl: h.mock.url,
+			pendingBaseUrl: null,
+			restartRequired: false,
 			listen: { host: "127.0.0.1", port: 0 },
 			proxyAuthRequired: false,
 			uiAuthRequired: false,
@@ -1280,6 +1286,11 @@ describe("控制台 API", () => {
 		expect(ui).toContain("async function testOutboundProxy");
 		expect(ui).toContain("outboundProxyDirty");
 		expect(ui).toContain("/ctl/outbound-proxy/test");
+		expect(ui).toContain('id="upstreamBaseUrl"');
+		expect(ui).toContain('id="saveUpstreamBaseUrl"');
+		expect(ui).toContain('id="upstreamBaseUrlState"');
+		expect(ui).toContain("已保存，重启后生效");
+		expect(ui).toContain("saveUpstreamBaseUrl");
 		expect(ui).toContain("autostart_enabled");
 		expect(ui).toContain("set_autostart");
 		expect(ui).toContain(
@@ -1413,6 +1424,62 @@ describe("控制台 API", () => {
 			body: JSON.stringify({ outboundProxyMode: "custom", outboundProxyUrl: "" }),
 		});
 		expect(badProxyRes.status).toBe(400);
+
+		const originRes = await fetch(`${base}/ctl/config`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ baseUrl: "https://aihub.dog/" }),
+		});
+		expect(originRes.status).toBe(200);
+		expect(await originRes.json()).toEqual({
+			ok: true,
+			restartRequired: true,
+			pendingBaseUrl: "https://aihub.dog",
+		});
+		expect(h.config.baseUrl).toBe("https://aihub.dog");
+		expect(h.proxyDeps.baseUrl).toBe(h.mock.url);
+
+		const pendingStatus = (await fetch(`${base}/ctl/status`).then((response) =>
+			response.json(),
+		)) as {
+			config: {
+				baseUrl: string;
+				pendingBaseUrl: string | null;
+				restartRequired: boolean;
+			};
+		};
+		expect(pendingStatus.config).toMatchObject({
+			baseUrl: h.mock.url,
+			pendingBaseUrl: "https://aihub.dog",
+			restartRequired: true,
+		});
+
+		const pendingHotSave = await fetch(`${base}/ctl/config`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ upstreamUserAgent: "PendingOrigin/1.0" }),
+		});
+		expect(pendingHotSave.status).toBe(200);
+		expect(await pendingHotSave.json()).toMatchObject({
+			ok: true,
+			restartRequired: true,
+			pendingBaseUrl: "https://aihub.dog",
+		});
+		expect(h.config.baseUrl).toBe("https://aihub.dog");
+
+		for (const baseUrl of [
+			"http://aihub.dog",
+			"https://aihub.dog/api",
+			"https://user:secret@aihub.dog",
+		]) {
+			const response = await fetch(`${base}/ctl/config`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ baseUrl }),
+			});
+			expect(response.status).toBe(400);
+			expect(h.config.baseUrl).toBe("https://aihub.dog");
+		}
 
 		const restartRes = await fetch(`${base}/ctl/config`, {
 			method: "POST",

@@ -125,13 +125,17 @@ const UI_TEMPLATE = `<!doctype html>
             </div>
           </section>
           <section class="panel">
+            <div class="panel-head"><h2>AIHub 上游</h2><span class="panel-meta">重启后统一生效</span></div>
+            <div class="panel-body controls"><div class="field grow"><label for="upstreamBaseUrl">AIHub 源头域名</label><input id="upstreamBaseUrl" type="url" maxlength="2048" placeholder="https://aihub.dog" aria-label="AIHub 源头域名"></div><button id="saveUpstreamBaseUrl">保存域名</button><span class="chip" id="upstreamBaseUrlState" role="status" aria-live="polite">当前生效</span><span class="setting-help">只接受完整 HTTPS 域名；保存后使用“本地服务”中的重启按钮应用。</span></div>
+          </section>
+          <section class="panel">
             <div class="panel-head"><h2>桌面应用</h2><span class="panel-meta" id="desktopVersion">浏览器模式</span></div>
             <div class="panel-body setting-list">
               <div class="setting-row"><label>路由地址</label><span class="setting-value" id="desktopPort">-</span><span></span></div>
               <div class="setting-row"><label>配置目录</label><span class="setting-value" id="desktopConfigDir">由运行环境管理</span><span></span></div>
               <div class="setting-row"><label>自动更新</label><div class="update-state"><span id="settingsUpdateState" role="status" aria-live="polite">仅桌面版支持</span><div class="progress" id="updateProgress" role="progressbar" aria-label="更新下载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div></div><button class="secondary mini desktop-only" id="settingsUpdate" hidden>检查</button></div>
               <div class="setting-row desktop-only" id="autostartRow" hidden><label for="autostart">开机自启</label><span class="setting-help" id="autostartHelp">登录系统后静默启动，并保留在托盘。</span><input id="autostart" type="checkbox" aria-label="开机静默自启"></div>
-              <div class="setting-row" id="restartRow"><label>本地服务</label><span class="setting-help">重新启动路由服务，连接会短暂中断。</span><button class="secondary mini" id="restartService">重启</button></div>
+              <div class="setting-row" id="restartRow"><label>本地服务</label><span class="setting-help" id="restartHelp">重新启动路由服务，连接会短暂中断。</span><button class="secondary mini" id="restartService">重启</button></div>
             </div>
           </section>
           <section class="panel">
@@ -172,6 +176,7 @@ let serviceRestarting=false;
 let revealedProxyToken="";
 let proxyTokenTimer;
 let outboundProxyDirty=false;
+let upstreamBaseUrlDirty=false;
 const SENTRY_CDN="https://browser.sentry-cdn.com/10.69.0/bundle.feedback.min.js";
 const CSP_NONCE="__AIHUB_AUTO_NONCE__";
 const GITHUB_URL="https://github.com/WSXYT/aihub-auto";
@@ -286,6 +291,11 @@ function render(status){
   if(document.activeElement!==$("#maxLatency"))$("#maxLatency").value=Math.round(status.config.economyPolicy.maxConservativeLatencyMs/1000);
   if(document.activeElement!==$("#minSamples"))$("#minSamples").value=status.config.economyPolicy.minOutcomeSamples;
   if(document.activeElement!==$("#upstreamUa"))$("#upstreamUa").value=status.config.upstreamUserAgent||"";
+  if(!upstreamBaseUrlDirty)$("#upstreamBaseUrl").value=status.config.pendingBaseUrl||status.config.baseUrl||"https://aihub.top";
+  const upstreamPending=Boolean(status.config.restartRequired&&status.config.pendingBaseUrl);
+  $("#upstreamBaseUrlState").className="chip "+(upstreamPending?"warn":"ok");
+  $("#upstreamBaseUrlState").textContent=upstreamPending?"已保存，重启后生效":"当前生效";
+  $("#restartHelp").textContent=upstreamPending?"AIHub 源头域名等待应用；重启会短暂中断连接。":"重新启动路由服务，连接会短暂中断。";
   if(document.activeElement!==$("#updateMirrors"))$("#updateMirrors").value=(status.config.updateMirrors||[]).join(", ");
   if(!outboundProxyDirty){$("#outboundProxyMode").value=status.config.outboundProxyMode||"none";$("#outboundProxyUrl").value=status.config.outboundProxyUrl||""}
   syncProxyControl();
@@ -313,6 +323,7 @@ async function saveStrategy(){
   toast("策略已保存");await refresh()
 }
 async function saveUserAgent(){const upstreamUserAgent=$("#upstreamUa").value.trim();await api("/ctl/config",{method:"POST",body:JSON.stringify({upstreamUserAgent})});toast("User-Agent 已保存");await refresh()}
+async function saveUpstreamBaseUrl(){const baseUrl=$("#upstreamBaseUrl").value.trim();if(!baseUrl)throw new Error("请填写 AIHub 源头域名");const result=await api("/ctl/config",{method:"POST",body:JSON.stringify({baseUrl})});upstreamBaseUrlDirty=false;toast(result.restartRequired?"域名已保存，请重启本地服务":"源头域名未改变");await refresh()}
 async function saveUpdateMirrors(){const updateMirrors=$("#updateMirrors").value.split(/[\\s,]+/).filter(Boolean);await api("/ctl/config",{method:"POST",body:JSON.stringify({updateMirrors})});toast(updateMirrors.length?"更新镜像已保存":"将只使用 GitHub 更新源");await refresh()}
 function syncProxyControl(){const mode=$("#outboundProxyMode").value,custom=mode==="custom";$("#outboundProxyUrl").disabled=!custom;$("#outboundProxyHelp").textContent=custom?"自定义 HTTP(S) 代理会用于 AIHub、模型上游和桌面更新。":mode==="system"?"使用进程继承的 HTTPS_PROXY 或 HTTP_PROXY 环境代理。":"直连 AIHub 与更新服务。"}
 function proxyFormValues(){const outboundProxyMode=$("#outboundProxyMode").value,outboundProxyUrl=$("#outboundProxyUrl").value.trim();if(outboundProxyMode==="custom"&&!outboundProxyUrl)throw new Error("请填写自定义代理地址");return {outboundProxyMode,outboundProxyUrl}}
@@ -332,6 +343,8 @@ $("#revealSettingsKey").addEventListener("click",event=>action(event.currentTarg
 $("#forgetUiAuth").addEventListener("click",event=>action(event.currentTarget,forgetUiAuth));
 $("#refresh").addEventListener("click",event=>action(event.currentTarget,()=>refresh(true)));
 $("#saveCfg").addEventListener("click",event=>action(event.currentTarget,saveStrategy));
+$("#saveUpstreamBaseUrl").addEventListener("click",event=>action(event.currentTarget,saveUpstreamBaseUrl));
+$("#upstreamBaseUrl").addEventListener("input",()=>{upstreamBaseUrlDirty=true});
 $("#saveUa").addEventListener("click",event=>action(event.currentTarget,saveUserAgent));
 $("#saveUpdateMirrors").addEventListener("click",event=>action(event.currentTarget,saveUpdateMirrors));
 $("#testOutboundProxy").addEventListener("click",event=>action(event.currentTarget,testOutboundProxy));

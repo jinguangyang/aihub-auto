@@ -1,10 +1,72 @@
 import type { AIHubClient } from "@aihub-auto/core";
 import { AIHubApiError } from "@aihub-auto/core";
+import {
+	deriveAccountIdentity,
+	legacyCredentialIdentity,
+} from "./account-state.ts";
 import { AccountSwitchBusyError } from "./account-errors.ts";
-import type { AppState, Credentials } from "./config.ts";
+import type { AppState, Credentials, PendingPoolDelete } from "./config.ts";
 import type { Logger } from "./logger.ts";
 
 export const POOL_KEY_PREFIX = "aihub-auto-g";
+
+const MAX_PENDING_DELETE_RETRIES_PER_PASS = 8;
+const MAX_DELETE_ATTEMPTS = 31;
+const DELETE_RETRY_BASE_MS = 5_000;
+const DELETE_RETRY_MAX_MS = 60 * 60_000;
+
+export type PoolDeleteErrorCode =
+	| "network"
+	| "timeout"
+	| "rate_limited"
+	| "unauthorized"
+	| "upstream"
+	| "unknown";
+
+interface PoolEvictionResult {
+	removed: number;
+	changed: boolean;
+}
+
+function deleteErrorCode(error: unknown): PoolDeleteErrorCode {
+	if (error instanceof AIHubApiError) {
+		if (error.status === 401 || error.status === 403) return "unauthorized";
+		if (error.status === 408 || error.status === 504) return "timeout";
+		if (error.status === 429) return "rate_limited";
+		if (error.status >= 500) return "upstream";
+		if (error.status === 0)
+			return /timeout/i.test(error.message) ? "timeout" : "network";
+		return "upstream";
+	}
+	if (error instanceof DOMException && error.name === "TimeoutError")
+		return "timeout";
+	if (error instanceof TypeError) return "network";
+	return "unknown";
+}
+
+function deleteIsIdempotentlyGone(error: unknown): boolean {
+	if (!(error instanceof AIHubApiError)) return false;
+	if (error.status === 404 || error.status === 410) return true;
+	const code = (error.code ?? "")
+		.toLowerCase()
+		.replaceAll("-", "_")
+		.replaceAll(" ", "_");
+	return new Set([
+		"404",
+		"410",
+		"not_found",
+		"notfound",
+		"key_not_found",
+		"key_notfound",
+	]).has(code);
+}
+
+function deleteRetryDelay(attempts: number): number {
+	return Math.min(
+		DELETE_RETRY_MAX_MS,
+		DELETE_RETRY_BASE_MS * 2 ** Math.max(0, Math.min(attempts - 1, 17)),
+	);
+}
 
 export interface ActiveKey {
 	sk: string;
@@ -64,13 +126,21 @@ export class RouteExecutor {
 		return { sk: entry.sk, groupId: state.currentGroupId };
 	}
 
-	private async withAuth<T>(fn: () => Promise<T>): Promise<T> {
+	private async withAuth<T>(
+		fn: () => Promise<T>,
+		expectedAccountIdentity?: string,
+	): Promise<T> {
 		try {
 			return await fn();
 		} catch (err) {
 			if (err instanceof AIHubApiError && err.status === 401) {
 				const ok = await this.deps.reauth();
-				if (ok) return await fn();
+				if (
+					ok &&
+					(!expectedAccountIdentity ||
+						this.currentAccountIdentity() === expectedAccountIdentity)
+				)
+					return await fn();
 			}
 			throw err;
 		}
@@ -93,17 +163,161 @@ export class RouteExecutor {
 		);
 	}
 
+	pendingPoolDeleteStats(now = Date.now()): {
+		pending: number;
+		due: number;
+		currentAccountPending: number;
+	} {
+		const entries = Object.values(this.deps.state.pendingPoolDeletes);
+		const identity = this.currentAccountIdentity();
+		return {
+			pending: entries.length,
+			due: entries.filter((entry) => entry.nextRetryAt <= now).length,
+			currentAccountPending: identity
+				? entries.filter((entry) => entry.accountIdentity === identity).length
+				: 0,
+		};
+	}
+
+	retryPendingPoolDeletes(now = Date.now()): Promise<number> {
+		return this.serializePool(async () => {
+			const result = await this.retryPendingPoolDeletesLocked(now);
+			if (result.changed) await this.deps.persistState();
+			return result.removed;
+		});
+	}
+
+	private currentAccountIdentity(): string | undefined {
+		const token = this.deps.credentials.accessToken;
+		if (!token) return undefined;
+		return (
+			legacyCredentialIdentity(this.deps.credentials) ??
+			this.deps.state.accountIdentity ??
+			deriveAccountIdentity({}, token)
+		);
+	}
+
+	private pendingDeleteOwner(): string {
+		const token = this.deps.credentials.accessToken;
+		return (
+			legacyCredentialIdentity(this.deps.credentials) ??
+			this.deps.state.accountIdentity ??
+			(token ? deriveAccountIdentity({}, token) : undefined) ??
+			"unidentified-account"
+		);
+	}
+
+	private queuePendingDelete(
+		keyId: number,
+		groupId: number,
+		accountIdentity: string,
+		error: unknown,
+		now = Date.now(),
+	): PendingPoolDelete {
+		const key = String(keyId);
+		const previous = this.deps.state.pendingPoolDeletes[key];
+		const attempts = Math.min(
+			MAX_DELETE_ATTEMPTS,
+			(previous?.attempts ?? 0) + 1,
+		);
+		const entry: PendingPoolDelete = {
+			keyId,
+			groupId,
+			accountIdentity,
+			attempts,
+			nextRetryAt: now + deleteRetryDelay(attempts),
+			queuedAt: previous?.queuedAt ?? now,
+			lastErrorCode: deleteErrorCode(error),
+		};
+		this.deps.state.pendingPoolDeletes[key] = entry;
+		return entry;
+	}
+
+	private async deleteRemoteKey(
+		keyId: number,
+		expectedAccountIdentity = this.pendingDeleteOwner(),
+	): Promise<void> {
+		try {
+			if (this.currentAccountIdentity() !== expectedAccountIdentity) {
+				throw new AIHubApiError(
+					"account identity changed before managed Key deletion",
+					401,
+					"account_identity_changed",
+				);
+			}
+			await this.withAuth(
+				() => this.deps.client.deleteKey(keyId),
+				expectedAccountIdentity,
+			);
+		} catch (error) {
+			if (deleteIsIdempotentlyGone(error)) return;
+			throw error;
+		}
+	}
+
+	private async retryPendingPoolDeletesLocked(
+		now = Date.now(),
+	): Promise<{ removed: number; changed: boolean }> {
+		const identity = this.currentAccountIdentity();
+		if (!identity) return { removed: 0, changed: false };
+		const due = Object.values(this.deps.state.pendingPoolDeletes)
+			.filter(
+				(entry) =>
+					entry.accountIdentity === identity && entry.nextRetryAt <= now,
+			)
+			.sort(
+				(left, right) =>
+					left.nextRetryAt - right.nextRetryAt ||
+					left.queuedAt - right.queuedAt ||
+					left.keyId - right.keyId,
+			)
+			.slice(0, MAX_PENDING_DELETE_RETRIES_PER_PASS);
+		let removed = 0;
+		let changed = false;
+		for (const entry of due) {
+			try {
+				await this.deleteRemoteKey(entry.keyId, entry.accountIdentity);
+				delete this.deps.state.pendingPoolDeletes[String(entry.keyId)];
+				removed++;
+				changed = true;
+				this.deps.logger.info(
+					`pool delete retry succeeded: group=${entry.groupId} keyId=${entry.keyId}`,
+				);
+			} catch (error) {
+				const updated = this.queuePendingDelete(
+					entry.keyId,
+					entry.groupId,
+					entry.accountIdentity,
+					error,
+					now,
+				);
+				changed = true;
+				this.deps.logger.warn(
+					`pool delete retry failed: group=${entry.groupId} keyId=${entry.keyId} category=${updated.lastErrorCode}`,
+				);
+			}
+		}
+		return { removed, changed };
+	}
+
 	clearManagedKeysForAccountSwitch(): Promise<{ orphanedKeyIds: number[] }> {
 		return this.serializePool(async () => {
 			if (this.hasAccountActivity()) throw new AccountSwitchBusyError();
 			const orphanedKeyIds: number[] = [];
+			const accountIdentity = this.pendingDeleteOwner();
 			for (const [groupId, entry] of Object.entries(this.deps.state.pool)) {
 				try {
-					await this.deps.client.deleteKey(entry.keyId);
+				await this.deleteRemoteKey(entry.keyId, accountIdentity);
 				} catch (error) {
 					orphanedKeyIds.push(entry.keyId);
+					const queued = this.queuePendingDelete(
+						entry.keyId,
+						Number(groupId),
+						accountIdentity,
+						error,
+					);
 					this.deps.logger.warn(
-						`账号切换清理失败，已丢弃本地池记录:keyId=${entry.keyId} ${error instanceof Error ? error.message : ""}`,
+						`account switch cleanup failed: group=${groupId} keyId=${entry.keyId} category=${queued.lastErrorCode}`,
 					);
 				}
 				delete this.deps.state.pool[groupId];
@@ -271,9 +485,10 @@ export class RouteExecutor {
 	): Promise<number> {
 		if (this.deps.keyMode !== "pool") return 0;
 		return this.serializePool(async () => {
-			const removed = await this.evictLru(undefined, forceReclaimGroupIds);
-			if (removed > 0) await this.deps.persistState();
-			return removed;
+			const retried = await this.retryPendingPoolDeletesLocked();
+			const evicted = await this.evictLru(undefined, forceReclaimGroupIds);
+			if (retried.changed || evicted.changed) await this.deps.persistState();
+			return evicted.removed;
 		});
 	}
 
@@ -281,7 +496,7 @@ export class RouteExecutor {
 	private async evictLru(
 		protectGroupId?: number,
 		forceReclaimGroupIds: ReadonlySet<number> = new Set(),
-	): Promise<number> {
+	): Promise<PoolEvictionResult> {
 		const { state, logger } = this.deps;
 		const isHardProtected = (groupId: number): boolean =>
 			(protectGroupId !== undefined && groupId === protectGroupId) ||
@@ -294,6 +509,8 @@ export class RouteExecutor {
 		const grace = this.deps.evictionGraceMs ?? 0;
 		const now = Date.now();
 		let removed = 0;
+		let changed = false;
+		const accountIdentity = this.pendingDeleteOwner();
 		const overCapacity =
 			Object.keys(state.pool).length > this.deps.poolMaxGroups;
 		const victims = Object.entries(state.pool)
@@ -317,21 +534,32 @@ export class RouteExecutor {
 			// 快照之后可能出现创建/预留/在飞请求;删除前必须重新确认。
 			if (isHardProtected(id) || (!forced && isSoftProtected(id))) continue;
 			try {
-				await this.withAuth(() => this.deps.client.deleteKey(entry.keyId));
+				await this.deleteRemoteKey(entry.keyId, accountIdentity);
 				delete state.pool[groupId];
 				this.deps.onPoolKeyRemoved?.(id, forced);
 				removed++;
+				changed = true;
 				logger.info(
 					`${forced ? "池强制回收" : "池 LRU 删除"}:group=${groupId} keyId=${entry.keyId}`,
 				);
-			} catch (err) {
-				logger.warn(
-					`池删除失败(保留记录,下轮重试):keyId=${entry.keyId} ${err instanceof Error ? err.message : ""}`,
+			} catch (error) {
+				delete state.pool[groupId];
+				this.deps.onPoolKeyRemoved?.(id, forced);
+				const queued = this.queuePendingDelete(
+					entry.keyId,
+					id,
+					accountIdentity,
+					error,
+					now,
 				);
-				break;
+				removed++;
+				changed = true;
+				logger.warn(
+					`pool delete queued: group=${groupId} keyId=${entry.keyId} category=${queued.lastErrorCode}`,
+				);
 			}
 		}
-		return removed;
+		return { removed, changed };
 	}
 
 	/**
@@ -342,17 +570,46 @@ export class RouteExecutor {
 		if (this.deps.keyMode !== "pool") return;
 		await this.serializePool(async () => {
 			const { state, logger } = this.deps;
-			const keys = await this.withAuth(() => this.deps.client.listAllKeys());
-			const remoteIds = new Set(keys.map((key) => key.id));
+			const retried = await this.retryPendingPoolDeletesLocked();
+			let changed = retried.changed;
+			try {
+				const keys = await this.withAuth(() => this.deps.client.listAllKeys());
+				const remoteIds = new Set(keys.map((key) => key.id));
+				const accountIdentity = this.currentAccountIdentity();
 
-			for (const [groupId, entry] of Object.entries(state.pool)) {
-				if (!remoteIds.has(entry.keyId)) {
-					delete state.pool[groupId];
-					logger.warn(`池记录失效(远端已删):group=${groupId}`);
+				for (const [groupId, entry] of Object.entries(state.pool)) {
+					if (!remoteIds.has(entry.keyId)) {
+						delete state.pool[groupId];
+						changed = true;
+						logger.warn(`池记录失效(远端已删):group=${groupId}`);
+					}
 				}
+				if (accountIdentity) {
+					for (const [keyId, entry] of Object.entries(
+						state.pendingPoolDeletes,
+					)) {
+						if (
+							entry.accountIdentity === accountIdentity &&
+							!remoteIds.has(entry.keyId)
+						) {
+							delete state.pendingPoolDeletes[keyId];
+							changed = true;
+							logger.info(
+								`pending pool delete already absent: group=${entry.groupId} keyId=${entry.keyId}`,
+							);
+						}
+					}
+				}
+			} catch (error) {
+				logger.warn(
+					`启动对账列表失败，将继续重试待清理 Key:${
+						error instanceof Error ? error.name : "unknown"
+					}`,
+				);
 			}
-			await this.evictLru();
-			await this.deps.persistState();
+			const evicted = await this.evictLru();
+			changed ||= evicted.changed;
+			if (changed) await this.deps.persistState();
 		});
 	}
 
@@ -360,15 +617,23 @@ export class RouteExecutor {
 	async cleanup(): Promise<void> {
 		await this.serializePool(async () => {
 			const { state, logger } = this.deps;
+			const accountIdentity = this.pendingDeleteOwner();
+			await this.retryPendingPoolDeletesLocked();
 			for (const [groupId, entry] of Object.entries(state.pool)) {
 				try {
-					await this.withAuth(() => this.deps.client.deleteKey(entry.keyId));
-					delete state.pool[groupId];
-				} catch (err) {
+					await this.deleteRemoteKey(entry.keyId, accountIdentity);
+				} catch (error) {
+					const queued = this.queuePendingDelete(
+						entry.keyId,
+						Number(groupId),
+						accountIdentity,
+						error,
+					);
 					logger.warn(
-						`退出清理失败:keyId=${entry.keyId} ${err instanceof Error ? err.message : ""}`,
+						`exit cleanup queued: group=${groupId} keyId=${entry.keyId} category=${queued.lastErrorCode}`,
 					);
 				}
+				delete state.pool[groupId];
 			}
 			await this.deps.persistState();
 		});

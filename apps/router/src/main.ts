@@ -134,9 +134,10 @@ async function main(): Promise<void> {
 	}
 
 	const fetchUpstream = createOutboundFetch(config);
+	const activeBaseUrl = config.baseUrl;
 	const createAIHubClient = (token: () => string | undefined) =>
 		new AIHubClient({
-			baseUrl: config.baseUrl,
+			baseUrl: activeBaseUrl,
 			token,
 			fetch: fetchUpstream,
 		});
@@ -328,7 +329,7 @@ async function main(): Promise<void> {
 	try {
 		server = createServer({
 			config,
-			activeBaseUrl: config.baseUrl,
+			activeBaseUrl,
 			state,
 			credentials,
 			accounts,

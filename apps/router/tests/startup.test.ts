@@ -101,6 +101,10 @@ describe("startup options", () => {
 		expect(state.pool).toEqual({});
 		expect(state.accountIdentity).toBe("id:new-account");
 	});
+
+	test("legacy state defaults to an empty pending delete queue", () => {
+		expect(StateSchema.parse({}).pendingPoolDeletes).toEqual({});
+	});
 });
 
 describe("account pool configuration", () => {

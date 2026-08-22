@@ -1126,9 +1126,22 @@ describe("控制台 API", () => {
 		h.affinity.bind("historical-session", 2);
 		h.affinity.bindResponse("resp_historical", "historical-session", 2);
 		h.traffic.begin(1);
+		h.state.pendingPoolDeletes["991"] = {
+			keyId: 991,
+			groupId: 9,
+			accountIdentity: "id:account-1",
+			attempts: 1,
+			nextRetryAt: 0,
+			queuedAt: 0,
+			lastErrorCode: "upstream",
+		};
+		h.config.outboundProxyMode = "custom";
+		h.config.outboundProxyUrl = "http://proxy-user:proxy-secret@proxy:7890";
 		const statusRes = await fetch(`${base}/ctl/status`);
 		const statusText = await statusRes.text();
 		expect(statusText).not.toContain("sk-mock");
+		expect(statusText).not.toContain("proxy-user");
+		expect(statusText).not.toContain("proxy-secret");
 		expect(statusText).not.toMatch(/"sk"\s*:/);
 		const status = JSON.parse(statusText) as {
 			currentGroupId: number;
@@ -1149,6 +1162,11 @@ describe("控制台 API", () => {
 				outcomeSamples?: number;
 			}[];
 			pool: Record<string, { keyId: number; lastUsedAt: number }>;
+			poolCleanup: {
+				pending: number;
+				due: number;
+				currentAccountPending: number;
+			};
 			affinity: { sessions: number; responseAliases: number };
 			manualLock: { groupId: number | null; revision: number };
 			sentry: { dsn: string; userEmail: string | null };
@@ -1178,6 +1196,11 @@ describe("控制台 API", () => {
 		};
 		expect(status.currentGroupId).toBe(1);
 		expect(status.pool["1"]?.keyId).toBeDefined();
+		expect(status.poolCleanup).toEqual({
+			pending: 1,
+			due: 1,
+			currentAccountPending: 1,
+		});
 		expect(status.affinity.sessions).toBe(2);
 		expect(status.affinity.responseAliases).toBe(2);
 		expect(status.manualLock.groupId).toBeNull();
@@ -1206,8 +1229,8 @@ describe("控制台 API", () => {
 			accountPoolPlans: [],
 			priceBand: { min: 0, max: 0.15 },
 			updateMirrors: [],
-			outboundProxyMode: "none",
-			outboundProxyUrl: "",
+			outboundProxyMode: "custom",
+			outboundProxyUrl: "http://proxy:7890",
 		});
 
 		await Bun.write(
@@ -1289,6 +1312,7 @@ describe("控制台 API", () => {
 		expect(ui).toContain('id="upstreamBaseUrl"');
 		expect(ui).toContain('id="saveUpstreamBaseUrl"');
 		expect(ui).toContain('id="upstreamBaseUrlState"');
+		expect(ui).toContain("待清理 Key");
 		expect(ui).toContain("已保存，重启后生效");
 		expect(ui).toContain("saveUpstreamBaseUrl");
 		expect(ui).toContain("autostart_enabled");

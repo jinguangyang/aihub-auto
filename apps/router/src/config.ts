@@ -7,6 +7,7 @@ import {
 } from "@aihub-auto/core";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { isIP } from "node:net";
 
 function isPublicSentryDsn(value: string): boolean {
 	try {
@@ -112,19 +113,44 @@ function validateOutboundProxy(
 
 export function isAllowedUpstreamOrigin(value: string): boolean {
 	try {
+		if (value.trim() !== value) return false;
+		const match = value.match(
+			/^[A-Za-z][A-Za-z\d+.-]*:\/\/([^/?#]+)\/?$/,
+		);
+		if (!match) return false;
+		const authority = match[1]!;
+		// URL.username/password are empty for an empty userinfo section, so
+		// reject the raw delimiter instead of relying on the parsed fields.
+		if (
+			authority.includes("@") ||
+			/[\\\s%]/.test(authority) ||
+			authority.endsWith(":")
+		)
+			return false;
 		const url = new URL(value);
+		const hostname = url.hostname.replace(/^\[|\]$/g, "");
+		const rawHost = authority.startsWith("[")
+			? authority.slice(0, authority.indexOf("]") + 1).replace(/^\[|\]$/g, "")
+			: authority.split(":", 1)[0]!;
+		if (
+			isIP(hostname) !== 6 &&
+			(!/^[A-Za-z0-9.-]+$/.test(hostname) ||
+				hostname.startsWith(".") ||
+				hostname.endsWith(".") ||
+				hostname.includes("..") ||
+				hostname.split(".").some((label) =>
+					!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label),
+				)))
+			return false;
 		const loopback =
-			url.hostname === "127.0.0.1" ||
-			url.hostname === "[::1]" ||
-			url.hostname === "localhost";
-		const canonicalInput = value.endsWith("/") ? value.slice(0, -1) : value;
+			rawHost.toLowerCase() === "127.0.0.1" ||
+			rawHost.toLowerCase() === "::1" ||
+			rawHost.toLowerCase() === "localhost";
 		return (
 			(url.protocol === "https:" || (url.protocol === "http:" && loopback)) &&
 			!url.username &&
 			!url.password &&
-			!url.search &&
-			!url.hash &&
-			canonicalInput === url.origin
+			url.pathname === "/"
 		);
 	} catch {
 		return false;
@@ -287,6 +313,25 @@ export const ConfigSchema = z
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
 
+export const PendingPoolDeleteSchema = z.object({
+	keyId: z.number().int().positive(),
+	groupId: z.number().int().positive(),
+	accountIdentity: z.string().min(1).max(128),
+	attempts: z.number().int().min(0).max(31).default(0),
+	nextRetryAt: z.number().finite().nonnegative(),
+	queuedAt: z.number().finite().nonnegative(),
+	lastErrorCode: z.enum([
+		"network",
+		"timeout",
+		"rate_limited",
+		"unauthorized",
+		"upstream",
+		"unknown",
+	]),
+});
+
+export type PendingPoolDelete = z.infer<typeof PendingPoolDeleteSchema>;
+
 /** Managed relay deployments may provide secrets without storing them in config.json. */
 export function applyManagedSecretOverrides(
 	config: AppConfig,
@@ -325,6 +370,10 @@ export const StateSchema = z.object({
 				lastUsedAt: z.number(),
 			}),
 		)
+		.default({}),
+	/** 远端托管 Key 删除失败后的非敏感重试队列;不保存 sk。 */
+	pendingPoolDeletes: z
+		.record(z.string(), PendingPoolDeleteSchema)
 		.default({}),
 	/** 只保存 SHA-256 会话摘要,不落原始提示词/会话 ID */
 	sessions: z

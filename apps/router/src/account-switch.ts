@@ -219,10 +219,17 @@ export class AccountSwitchService {
 			if (switched) await this.deps.daemon.runAccountSwitchMutation(commit);
 			else await commit();
 		} catch (error) {
+			const pendingPoolDeletes = managedKeysCleared
+				? structuredClone(this.deps.state.pendingPoolDeletes)
+				: undefined;
 			this.restore(this.deps.credentials, previousCredentials);
 			this.restore(this.deps.state, previousState);
 			this.restore(this.deps.accounts, previousAccounts);
-			if (managedKeysCleared) this.deps.state.pool = {};
+			if (managedKeysCleared) {
+				this.deps.state.pool = {};
+				this.deps.state.pendingPoolDeletes = pendingPoolDeletes!;
+				await this.deps.persistState().catch(() => undefined);
+			}
 			this.deps.daemon.resetAccountCaches();
 			throw error;
 		}

@@ -87,6 +87,9 @@ describe("Sentry 过滤边界", () => {
 		expect(ConfigSchema.parse({ baseUrl: "https://aihub.dog/" }).baseUrl).toBe(
 			"https://aihub.dog",
 		);
+		expect(ConfigSchema.parse({ baseUrl: "https://AIHUB.DOG:443/" }).baseUrl).toBe(
+			"https://aihub.dog",
+		);
 		expect(
 			ConfigSchema.parse({ baseUrl: "http://127.0.0.1:8787" }).baseUrl,
 		).toBe("http://127.0.0.1:8787");
@@ -97,9 +100,21 @@ describe("Sentry 过滤边界", () => {
 		for (const baseUrl of [
 			"http://aihub.dog",
 			"https://aihub.dog/path",
+			"https://aihub.dog/..",
+			"https://aihub.dog/%2e%2e",
 			"https://aihub.dog?query=1",
 			"https://aihub.dog/#fragment",
+			"https://aihub.dog?",
+			"https://aihub.dog#",
+			"https://@aihub.dog",
+			"https://:@aihub.dog",
 			"https://user:secret@aihub.dog",
+			"https://*",
+			"https://*.dog",
+			"https://foo..bar",
+			"https://aihub.dog:",
+			"https://aihub.dog\\",
+			"http://127.0.0.1.",
 			"file:///tmp/aihub",
 		]) {
 			expect(() => ConfigSchema.parse({ baseUrl })).toThrow();

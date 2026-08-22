@@ -35,7 +35,7 @@
 - `ServerDeps.activeBaseUrl` records the startup origin; `deps.config.baseUrl` may hold a validated pending origin until restart.
 - `/ctl/status` returns `config.baseUrl` as the active origin, plus `pendingBaseUrl` and `restartRequired` when they differ.
 
-- [ ] **Step 1: Add failing schema and control tests.**
+- [x] **Step 1: Add failing schema and control tests.**
 
   Add tests asserting `https://aihub.dog` and loopback HTTP mocks parse; reject
   public HTTP, credentials, paths, queries, fragments, and malformed values.
@@ -43,7 +43,7 @@
   HTTP 200 with `restartRequired: true`, verify the active client remains on
   the mock URL, and verify a later hot-setting save preserves the pending URL.
 
-- [ ] **Step 2: Run the focused tests and observe the expected failures.**
+- [x] **Step 2: Run the focused tests and observe the expected failures.**
 
   Run:
 
@@ -54,14 +54,14 @@
   Expected: new origin assertions fail because the current schema/API has no
   origin-specific validation or pending-restart response.
 
-- [ ] **Step 3: Implement origin validation and startup-origin tracking.**
+- [x] **Step 3: Implement origin validation and startup-origin tracking.**
 
   In `config.ts`, validate URL scheme/host/port shape, reject credentials and
   non-root paths, permit HTTPS everywhere and HTTP only for loopback. Add the
   schema to `baseUrl` while retaining local mock compatibility. Pass
   `activeBaseUrl: config.baseUrl` from `main.ts` into `createServer`.
 
-- [ ] **Step 4: Implement pending origin handling in `/ctl/config` and status.**
+- [x] **Step 4: Implement pending origin handling in `/ctl/config` and status.**
 
   Add `baseUrl` to the allowed patch keys. Parse the complete candidate config,
   assign it only after validation, detect `parsed.data.baseUrl !==
@@ -70,7 +70,7 @@
   origin. Include active/pending origin metadata in `/ctl/status`; never return
   credentials or upstream response data.
 
-- [ ] **Step 5: Run focused tests and commit.**
+- [x] **Step 5: Run focused tests and commit.**
 
   Run the two commands above; expected result is all existing and new tests
   passing. Then commit:
@@ -90,12 +90,12 @@
 - Consume `/ctl/status` active/pending origin metadata and `/ctl/config` restart response.
 - Produce a settings control with stable IDs `upstreamBaseUrl` and `saveUpstreamBaseUrl`.
 
-- [ ] **Step 1: Add HTML/UI assertions.**
+- [x] **Step 1: Add HTML/UI assertions.**
 
   Assert the rendered UI contains the source-origin label, URL input, save
   button, restart-required status element, and existing restart control.
 
-- [ ] **Step 2: Add the settings row and save behavior.**
+- [x] **Step 2: Add the settings row and save behavior.**
 
   Place an `AIHub 源头域名` row near connection settings. Populate the input
   from `pendingBaseUrl ?? baseUrl`, show `当前生效` or `保存后需重启`, POST only
@@ -103,7 +103,7 @@
   success. Do not auto-restart; use the existing restart button. Keep the row
   responsive without text overlap.
 
-- [ ] **Step 3: Verify and commit.**
+- [x] **Step 3: Verify and commit.**
 
   Run:
 
@@ -133,19 +133,19 @@
   and bounded `lastErrorCode`.
 - Add `RouteExecutor.pendingPoolDeleteStats(now?)` and private queue helpers.
 
-- [ ] **Step 1: Add failing state and deletion tests.**
+- [x] **Step 1: Add failing state and deletion tests.**
 
   Add tests for a failed delete that detaches the pool entry and queues only
   metadata, a first failed victim followed by a successful later victim, and a
   remote 404 treated as success. Assert serialized state contains no `sk`.
 
-- [ ] **Step 2: Extend state schema and classify delete outcomes.**
+- [x] **Step 2: Extend state schema and classify delete outcomes.**
 
   Add the default-empty queue schema. Implement helpers that classify
   `AIHubApiError` statuses/codes into bounded categories and recognize 404/410
   or documented not-found codes as idempotent success.
 
-- [ ] **Step 3: Change eviction to isolate failures.**
+- [x] **Step 3: Change eviction to isolate failures.**
 
   Refactor `evictLru` to report state changes, continue after a failed victim,
   remove that victim from usable `state.pool`, enqueue its owner metadata, and
@@ -153,14 +153,14 @@
   it. Ensure successful deletion still invokes the current callback and logs
   only Key ID/group/category.
 
-- [ ] **Step 4: Add bounded retry processing.**
+- [x] **Step 4: Add bounded retry processing.**
 
   Implement a serialized retry pass for at most eight due entries belonging to
   the current account. Use `5s * 2^(attempts-1)` capped at one hour, saturate
   attempts at 31, update category/next retry on failure, and remove entries on
   success or idempotent not-found. Persist whenever queue or pool state changes.
 
-- [ ] **Step 5: Run executor tests and commit.**
+- [x] **Step 5: Run executor tests and commit.**
 
   Run:
 
@@ -191,14 +191,14 @@
 - Account switch/logout queue failures under the previous account identity.
 - `/ctl/status.poolCleanup` returns only pending/due/current-account counts.
 
-- [ ] **Step 1: Add account-transition and restart/reconcile tests.**
+- [x] **Step 1: Add account-transition and restart/reconcile tests.**
 
   Assert failed logout/switch deletion returns compatible `orphanedKeyIds`,
   keeps a durable old-account queue entry, does not retry it with the new
   account, and retries when the old identity is active. Add a state reload test
   and a status assertion for counts only.
 
-- [ ] **Step 2: Integrate retry into reconcile, trim, cleanup, and account switch.**
+- [x] **Step 2: Integrate retry into reconcile, trim, cleanup, and account switch.**
 
   Retry due entries before/alongside ordinary eviction, remove current-account
   pending IDs proven absent by a successful remote listing, retain other-account
@@ -206,14 +206,14 @@
   entries while queueing failures with the old identity; never use the new
   token for those IDs. Apply the same queue logic during optional exit cleanup.
 
-- [ ] **Step 3: Expose status and compact UI feedback.**
+- [x] **Step 3: Expose status and compact UI feedback.**
 
   Add `poolCleanup` aggregate counts to `/ctl/status`. Append a non-secret
   pending-cleanup indicator to the existing pool summary, with a tooltip/help
   string explaining that deletion will retry; do not render raw errors or
   secrets.
 
-- [ ] **Step 4: Run router regression tests and commit.**
+- [x] **Step 4: Run router regression tests and commit.**
 
   Run:
 
@@ -235,7 +235,7 @@
 - Inspect: `package.json`, desktop/Tauri version files, `git diff`, generated Linux binary.
 - Remote: `/opt/aihub-auto/aihub-auto`, `/var/lib/aihub-auto/config.json`.
 
-- [ ] **Step 1: Run full local verification.**
+- [x] **Step 1: Run full local verification.**
 
   Run:
 
@@ -248,7 +248,10 @@
 
   Expected: zero failures and no formatting diagnostics.
 
-- [ ] **Step 2: Build and hash the Linux binary with the cached runtime.**
+  Result: `bun run check` passed with 294 tests, router tests passed with 186
+  tests, desktop Rust tests passed with 4 tests, and `cargo fmt --check` passed.
+
+- [x] **Step 2: Build and hash the Linux binary with the cached runtime.**
 
   Run:
 
@@ -256,6 +259,10 @@
   bun build --compile --minify --compile-executable-path="$env:TEMP\aihub-auto-bun-linux-x64-baseline-1.3.14\bun-linux-x64-baseline-v1.3.14" --target=bun-linux-x64-baseline apps/router/src/main.ts --outfile output/aihub-auto-headless-linux-x64
   Get-FileHash output/aihub-auto-headless-linux-x64 -Algorithm SHA256
   ```
+
+  Result: built the non-overwriting artifact
+  `output/aihub-auto-headless-linux-x64-v0.4.5-recovery` (94,791,808 bytes).
+  SHA256: `6897D3729C1D3C7E715BDDE57EDF8C7F7ACDB59B707DA11A24BB87A41A02AFF0`.
 
 - [ ] **Step 3: Back up and deploy atomically.**
 
@@ -265,6 +272,10 @@
   binary as `root:root 0755`, and restart `aihub-auto.service`. Preserve all
   existing secrets and set only `baseUrl` to `https://aihub.dog` in the config.
 
+  Status: blocked until an authenticated `.120` upload/SSH route and service
+  procedure are available; the local SSH config has no `.120` host alias and
+  `easytunnel-deploy` is not installed.
+
 - [ ] **Step 4: Verify deployment and public browser flow.**
 
   Verify remote service/Caddy active, `NRestarts=0`, local `/healthz`, public
@@ -272,6 +283,8 @@
   and browser login gives authenticated `/ctl/status` with a `Secure`,
   `HttpOnly`, `SameSite=Strict` cookie. Confirm the old binary hash is present
   in the rollback directory and remove only the temporary `/tmp` upload.
+
+  Status: pending deployment.
 
 - [ ] **Step 5: Record and push release state.**
 

@@ -259,4 +259,247 @@ describe("executor 模式 pool", () => {
 		expect(h.state.pool).toEqual({});
 		expect([...h.mock.keys.keys()]).toEqual([999]);
 	});
+
+	test("failed victim is detached, queued without sk, and does not block later victims", async () => {
+		h = poolHarness(3);
+		await h.executor.ensureKey(1);
+		await h.executor.ensureKey(2);
+		await h.executor.ensureKey(3);
+		const first = h.state.pool["1"]!;
+		const second = h.state.pool["2"]!;
+		first.lastUsedAt = 0;
+		second.lastUsedAt = 1;
+		h.mock.deleteKeyFailures.set(first.keyId, {
+			status: 503,
+			remaining: 1,
+		});
+
+		expect(await h.executor.trimPool(new Set([1, 2]))).toBe(2);
+		expect(h.state.pool["1"]).toBeUndefined();
+		expect(h.state.pool["2"]).toBeUndefined();
+		expect(h.state.pendingPoolDeletes[String(first.keyId)]).toMatchObject({
+			keyId: first.keyId,
+			groupId: 1,
+			accountIdentity: "id:account-1",
+			attempts: 1,
+			lastErrorCode: "upstream",
+		});
+		const serialized = JSON.parse(
+			await Bun.file(`${h.configDir}/state.json`).text(),
+		) as { pendingPoolDeletes: Record<string, Record<string, unknown>> };
+		expect(serialized.pendingPoolDeletes[String(first.keyId)]).not.toHaveProperty(
+			"sk",
+		);
+		expect(h.mock.keys.has(second.keyId)).toBe(false);
+	});
+
+	test("pending delete retries with backoff and removes after success", async () => {
+		h = poolHarness(2);
+		await h.executor.ensureKey(1);
+		const entry = h.state.pool["1"]!;
+		h.state.pool["1"]!.lastUsedAt = 0;
+		h.mock.deleteKeyFailures.set(entry.keyId, {
+			status: 503,
+			remaining: 2,
+		});
+		await h.executor.trimPool(new Set([1]));
+		const pending = h.state.pendingPoolDeletes[String(entry.keyId)]!;
+		expect(pending.attempts).toBe(1);
+		const now = Date.now();
+		pending.nextRetryAt = now;
+		await h.executor.retryPendingPoolDeletes(now);
+		expect(h.state.pendingPoolDeletes[String(entry.keyId)]?.attempts).toBe(2);
+		h.state.pendingPoolDeletes[String(entry.keyId)]!.nextRetryAt = now;
+		await h.executor.retryPendingPoolDeletes(now);
+		expect(h.state.pendingPoolDeletes[String(entry.keyId)]).toBeUndefined();
+		expect(h.mock.keys.has(entry.keyId)).toBe(false);
+	});
+
+	test("remote not-found delete is idempotent success", async () => {
+		h = poolHarness(2);
+		await h.executor.ensureKey(1);
+		const entry = h.state.pool["1"]!;
+		h.mock.keys.delete(entry.keyId);
+		h.state.pool["1"]!.lastUsedAt = 0;
+		expect(await h.executor.trimPool(new Set([1]))).toBe(1);
+		expect(h.state.pendingPoolDeletes[String(entry.keyId)]).toBeUndefined();
+		expect(h.state.pool["1"]).toBeUndefined();
+	});
+
+	test("pending deletes stay owned by the old account", async () => {
+		h = poolHarness(2);
+		await h.executor.ensureKey(1);
+		const entry = h.state.pool["1"]!;
+		h.mock.deleteKeyFailures.set(entry.keyId, { status: 503, remaining: 1 });
+		const oldToken = h.credentials.accessToken;
+		await h.executor.clearManagedKeysForAccountSwitch();
+		expect(h.state.pendingPoolDeletes[String(entry.keyId)]?.accountIdentity).toBe(
+			"id:account-1",
+		);
+		h.credentials.accessToken = "account-two-token";
+		h.credentials.accountIdentity = "id:account-2";
+		h.state.accountIdentity = "id:account-2";
+		h.state.pendingPoolDeletes[String(entry.keyId)]!.nextRetryAt = 0;
+		await h.executor.retryPendingPoolDeletes(0);
+		expect(h.mock.keys.has(entry.keyId)).toBe(true);
+		h.credentials.accessToken = oldToken;
+		h.credentials.accountIdentity = "id:account-1";
+		h.state.accountIdentity = "id:account-1";
+		await h.executor.retryPendingPoolDeletes(0);
+		expect(h.mock.keys.has(entry.keyId)).toBe(false);
+		expect(h.state.pendingPoolDeletes[String(entry.keyId)]).toBeUndefined();
+	});
+
+	test("pending delete retry processes at most eight due entries per pass", async () => {
+		h = poolHarness();
+		for (let keyId = 101; keyId <= 110; keyId++) {
+			h.mock.keys.set(keyId, {
+				id: keyId,
+				name: `aihub-auto-g${keyId}`,
+				key: `sk-test-${keyId}`,
+				group_id: keyId,
+			});
+			h.state.pendingPoolDeletes[String(keyId)] = {
+				keyId,
+				groupId: keyId,
+				accountIdentity: "id:account-1",
+				attempts: 1,
+				nextRetryAt: 0,
+				queuedAt: keyId,
+				lastErrorCode: "upstream",
+			};
+		}
+
+		expect(await h.executor.retryPendingPoolDeletes(1_000)).toBe(8);
+		expect(Object.keys(h.state.pendingPoolDeletes).sort()).toEqual([
+			"109",
+			"110",
+		]);
+		expect(h.mock.keys.has(109)).toBe(true);
+		expect(h.mock.keys.has(110)).toBe(true);
+	});
+
+	test("pending delete attempts saturate at 31 with one-hour backoff", async () => {
+		h = poolHarness();
+		const keyId = 777;
+		h.mock.keys.set(keyId, {
+			id: keyId,
+			name: "aihub-auto-g7",
+			key: "sk-test-777",
+			group_id: 7,
+		});
+		h.mock.deleteKeyFailures.set(keyId, { status: 503, remaining: 1 });
+		h.state.pendingPoolDeletes[String(keyId)] = {
+			keyId,
+			groupId: 7,
+			accountIdentity: "id:account-1",
+			attempts: 31,
+			nextRetryAt: 0,
+			queuedAt: 0,
+			lastErrorCode: "upstream",
+		};
+
+		await h.executor.retryPendingPoolDeletes(1_000);
+		expect(h.state.pendingPoolDeletes[String(keyId)]).toMatchObject({
+			attempts: 31,
+			nextRetryAt: 3_601_000,
+			lastErrorCode: "upstream",
+		});
+	});
+
+	test("410 and exact key-not-found codes are idempotent but broad codes are not", async () => {
+		h = poolHarness();
+		for (const [keyId, status, code] of [
+			[801, 410, "gone"],
+			[802, 400, "key_not_found"],
+			[803, 400, "account_not_found"],
+		] as const) {
+			h.mock.keys.set(keyId, {
+				id: keyId,
+				name: `aihub-auto-g${keyId}`,
+				key: `sk-test-${keyId}`,
+				group_id: keyId,
+			});
+			h.mock.deleteKeyFailures.set(keyId, { status, code, remaining: 1 });
+			h.state.pendingPoolDeletes[String(keyId)] = {
+				keyId,
+				groupId: keyId,
+				accountIdentity: "id:account-1",
+				attempts: 1,
+				nextRetryAt: 0,
+				queuedAt: keyId,
+				lastErrorCode: "upstream",
+			};
+		}
+
+		expect(await h.executor.retryPendingPoolDeletes(1_000)).toBe(2);
+		expect(h.state.pendingPoolDeletes["801"]).toBeUndefined();
+		expect(h.state.pendingPoolDeletes["802"]).toBeUndefined();
+		expect(h.state.pendingPoolDeletes["803"]?.attempts).toBe(2);
+	});
+
+	test("startup reconcile retries pending deletes even when key listing fails", async () => {
+		h = poolHarness();
+		const keyId = 901;
+		h.mock.keys.set(keyId, {
+			id: keyId,
+			name: "aihub-auto-g9",
+			key: "sk-test-901",
+			group_id: 9,
+		});
+		h.state.pendingPoolDeletes[String(keyId)] = {
+			keyId,
+			groupId: 9,
+			accountIdentity: "id:account-1",
+			attempts: 1,
+			nextRetryAt: 0,
+			queuedAt: 0,
+			lastErrorCode: "upstream",
+		};
+		h.mock.listKeysStatus = 503;
+
+		await h.executor.reconcile();
+		expect(h.mock.keys.has(keyId)).toBe(false);
+		expect(h.state.pendingPoolDeletes[String(keyId)]).toBeUndefined();
+	});
+
+	test("401 refresh never retries an old-account delete with a new identity", async () => {
+		h = createHarness({
+			configPatch: { keyMode: "pool" },
+			reauth: async (credentials, state) => {
+				credentials.accessToken = "account-two-token";
+				credentials.accountIdentity = "id:account-2";
+				state.accountIdentity = "id:account-2";
+				return true;
+			},
+		});
+		const keyId = 902;
+		h.mock.keys.set(keyId, {
+			id: keyId,
+			name: "aihub-auto-g9",
+			key: "sk-test-902",
+			group_id: 9,
+		});
+		h.mock.deleteKeyFailures.set(keyId, { status: 401, remaining: 1 });
+		h.state.pendingPoolDeletes[String(keyId)] = {
+			keyId,
+			groupId: 9,
+			accountIdentity: "id:account-1",
+			attempts: 1,
+			nextRetryAt: 0,
+			queuedAt: 0,
+			lastErrorCode: "unauthorized",
+		};
+
+		await h.executor.retryPendingPoolDeletes(1_000);
+		expect(h.mock.keys.has(keyId)).toBe(true);
+		expect(
+			h.mock.requestLog.filter(
+				(request) => request.method === "DELETE" && request.path.endsWith("/902"),
+			),
+		).toHaveLength(1);
+		expect(h.state.pendingPoolDeletes[String(keyId)]?.accountIdentity).toBe(
+			"id:account-1",
+		);
+	});
 });

@@ -273,7 +273,8 @@ function render(status){
   const bandLabel=priceBand?"倍率 "+priceBand.min+"x 至 "+priceBand.max+"x":"倍率不限";
   $("#modeTier").textContent=status.config.mode==="economy"&&minRate!=null?"当前健康价格层 "+minRate+"x · "+bandLabel:bandLabel;
   $("#keyPool").textContent=status.config.keyMode==="pool"?poolSize+" / "+status.config.poolMaxGroups:"单 Key";
-  $("#keyPoolSub").textContent=status.affinity.sessions+" 会话 · "+status.affinity.responseAliases+" Responses 分支";
+  const cleanup=status.poolCleanup||{pending:0,due:0,currentAccountPending:0};
+  $("#keyPoolSub").textContent=status.affinity.sessions+" 会话 · "+status.affinity.responseAliases+" Responses 分支"+(cleanup.pending?" · "+cleanup.pending+" 个待清理 Key":"");
   $("#reqCount").textContent=String(status.traffic.requestsLast5m);
   $("#trafficSub").textContent=active+" 个在飞请求";
   $("#dataState").className="chip "+(status.stale?"warn":"ok");

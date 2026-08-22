@@ -61,6 +61,7 @@ export function createHarness(opts?: {
 	withServer?: boolean;
 	loggedIn?: boolean;
 	probeOutboundProxy?: ServerDeps["probeOutboundProxy"];
+	reauth?: (credentials: Credentials, state: AppState) => Promise<boolean>;
 }): Harness {
 	const mock = new MockAIHub();
 	const dir = mkdtempSync(join(tmpdir(), "aihub-auto-test-"));
@@ -147,7 +148,9 @@ export function createHarness(opts?: {
 		},
 		persistState,
 		persistCredentials,
-		reauth: async () => {
+		reauth: opts?.reauth
+			? () => opts.reauth!(credentials, state)
+			: async () => {
 			if (!credentials.refreshToken) return false;
 			try {
 				const s = await client.refreshSession(credentials.refreshToken);
@@ -162,7 +165,7 @@ export function createHarness(opts?: {
 			} catch {
 				return false;
 			}
-		},
+			},
 	});
 
 	const daemon = new RouteDaemon({

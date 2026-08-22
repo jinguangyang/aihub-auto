@@ -240,4 +240,79 @@ describe("AIHub account switch service", () => {
 		expect(h.credentials.accessToken).toBe(oldToken);
 		expect(h.credentials.accountIdentity).toBe("id:account-1");
 	});
+
+	test("failed switch persistence keeps old-account delete recovery durable", async () => {
+		h = createHarness();
+		await h.executor.ensureKey(1);
+		const entry = h.state.pool["1"]!;
+		h.mock.deleteKeyFailures.set(entry.keyId, { status: 503, remaining: 1 });
+		const failing = new AccountSwitchService({
+			client: h.client,
+			createClient: (token) =>
+				new AIHubClient({ baseUrl: h.mock.url, token: () => token }),
+			state: h.state,
+			credentials: h.credentials,
+			executor: h.executor,
+			daemon: h.daemon,
+			logger: h.logger,
+			accounts: h.accounts,
+			persistState: h.persistState,
+			persistCredentials: async () => {
+				throw new Error("disk full");
+			},
+			persistAccounts: h.persistAccounts,
+			syncSentryUser: () => {},
+		});
+
+		await expect(failing.login({ token: "account-two-token" })).rejects.toThrow(
+			"disk full",
+		);
+		expect(h.state.pool).toEqual({});
+		expect(h.state.pendingPoolDeletes[String(entry.keyId)]).toMatchObject({
+			keyId: entry.keyId,
+			accountIdentity: "id:account-1",
+		});
+		const persisted = JSON.parse(
+			await Bun.file(`${h.configDir}/state.json`).text(),
+		) as { pendingPoolDeletes: Record<string, Record<string, unknown>> };
+		expect(persisted.pendingPoolDeletes[String(entry.keyId)]).toMatchObject({
+			keyId: entry.keyId,
+			accountIdentity: "id:account-1",
+		});
+		expect(JSON.stringify(persisted.pendingPoolDeletes)).not.toContain(entry.sk);
+	});
+
+	test("failed logout persistence retains queued deletes on disk", async () => {
+		h = createHarness();
+		await h.executor.ensureKey(1);
+		const entry = h.state.pool["1"]!;
+		h.mock.deleteKeyFailures.set(entry.keyId, { status: 503, remaining: 1 });
+		const failing = new AccountSwitchService({
+			client: h.client,
+			createClient: (token) =>
+				new AIHubClient({ baseUrl: h.mock.url, token: () => token }),
+			state: h.state,
+			credentials: h.credentials,
+			executor: h.executor,
+			daemon: h.daemon,
+			logger: h.logger,
+			accounts: h.accounts,
+			persistState: h.persistState,
+			persistCredentials: async () => {
+				throw new Error("disk full");
+			},
+			persistAccounts: h.persistAccounts,
+			syncSentryUser: () => {},
+		});
+
+		await expect(failing.logout()).rejects.toThrow("disk full");
+		const persisted = JSON.parse(
+			await Bun.file(`${h.configDir}/state.json`).text(),
+		) as { pendingPoolDeletes: Record<string, Record<string, unknown>> };
+		expect(persisted.pendingPoolDeletes[String(entry.keyId)]).toMatchObject({
+			keyId: entry.keyId,
+			accountIdentity: "id:account-1",
+		});
+		expect(JSON.stringify(persisted.pendingPoolDeletes)).not.toContain(entry.sk);
+	});
 });

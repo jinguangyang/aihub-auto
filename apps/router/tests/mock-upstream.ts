@@ -46,6 +46,11 @@ export class MockAIHub {
 	refreshCalls = 0;
 	availableGroupsStatus: number | undefined;
 	groupRatesStatus: number | undefined;
+	listKeysStatus: number | undefined;
+	deleteKeyFailures = new Map<
+		number,
+		{ status: number; code?: string; remaining: number }
+	>();
 	/** 强制业务接口返回 401(模拟 token 过期);refresh 后復位 */
 	expireToken = false;
 	meDelayMs = 0;
@@ -210,6 +215,11 @@ export class MockAIHub {
 
 		// ---- Keys CRUD ----
 		if (path === "/api/v1/keys" && req.method === "GET") {
+			if (this.listKeysStatus !== undefined)
+				return this.json(
+					{ code: "list_keys_failed", message: "list keys failed" },
+					this.listKeysStatus,
+				);
 			if (this.expireToken)
 				return this.json({ code: 1, message: "unauthorized" }, 401);
 			const account = this.accountFor(auth);
@@ -255,6 +265,18 @@ export class MockAIHub {
 				return this.envelope(key);
 			}
 			if (req.method === "DELETE") {
+				const failure = this.deleteKeyFailures.get(id);
+				if (failure && failure.remaining > 0) {
+					failure.remaining--;
+					if (failure.remaining === 0) this.deleteKeyFailures.delete(id);
+					return this.json(
+						{
+							code: failure.code ?? "delete_failed",
+							message: "delete failed",
+						},
+						failure.status,
+					);
+				}
 				this.keys.delete(id);
 				return this.envelope({ message: "deleted" });
 			}

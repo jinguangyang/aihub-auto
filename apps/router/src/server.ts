@@ -200,6 +200,17 @@ function effectiveAccountPoolPlans(config: AppConfig): string[] {
 	return [...new Set(plans)].sort();
 }
 
+function publicProxyUrl(value: string): string {
+	try {
+		const url = new URL(value);
+		url.username = "";
+		url.password = "";
+		return `${url.protocol}//${url.host}${url.pathname === "/" ? "" : url.pathname}${url.search}${url.hash}`;
+	} catch {
+		return "";
+	}
+}
+
 function secureUiCookie(config: AppConfig): boolean {
 	return config.publicOrigin.startsWith("https://");
 }
@@ -684,6 +695,7 @@ export async function handleControl(
 			deps.state.manualLock.groupId === null
 				? undefined
 				: candidateByGroup.get(deps.state.manualLock.groupId);
+		const poolCleanup = deps.executor.pendingPoolDeleteStats(now);
 		return json({
 			currentGroupId: deps.state.currentGroupId ?? null,
 			currentCode: currentCode ?? null,
@@ -707,7 +719,7 @@ export async function handleControl(
 				upstreamUserAgent: deps.config.upstreamUserAgent,
 				updateMirrors: deps.config.updateMirrors,
 				outboundProxyMode: deps.config.outboundProxyMode,
-				outboundProxyUrl: deps.config.outboundProxyUrl,
+				outboundProxyUrl: publicProxyUrl(deps.config.outboundProxyUrl),
 				cacheIdleMs: deps.config.decision.cacheIdleMs,
 				blacklist: deps.config.blacklist,
 			},
@@ -717,6 +729,7 @@ export async function handleControl(
 					{ keyId: entry.keyId, lastUsedAt: entry.lastUsedAt },
 				]),
 			),
+			poolCleanup,
 			groups,
 			manualLock: {
 				...deps.state.manualLock,

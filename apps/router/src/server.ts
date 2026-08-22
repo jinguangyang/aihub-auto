@@ -203,9 +203,7 @@ function effectiveAccountPoolPlans(config: AppConfig): string[] {
 function publicProxyUrl(value: string): string {
 	try {
 		const url = new URL(value);
-		url.username = "";
-		url.password = "";
-		return `${url.protocol}//${url.host}${url.pathname === "/" ? "" : url.pathname}${url.search}${url.hash}`;
+		return `${url.protocol}//${url.host}`;
 	} catch {
 		return "";
 	}

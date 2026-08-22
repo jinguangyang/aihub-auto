@@ -23,6 +23,12 @@ export type PoolDeleteErrorCode =
 	| "upstream"
 	| "unknown";
 
+export interface ReauthResult {
+	ok: boolean;
+	/** True only when the refreshed access token was positively checked via /me. */
+	accountIdentityVerified: boolean;
+}
+
 interface PoolEvictionResult {
 	removed: number;
 	changed: boolean;
@@ -52,10 +58,6 @@ function deleteIsIdempotentlyGone(error: unknown): boolean {
 		.replaceAll("-", "_")
 		.replaceAll(" ", "_");
 	return new Set([
-		"404",
-		"410",
-		"not_found",
-		"notfound",
 		"key_not_found",
 		"key_notfound",
 	]).has(code);
@@ -101,7 +103,7 @@ export interface ExecutorDeps {
 	persistState: () => Promise<void>;
 	persistCredentials: () => Promise<void>;
 	/** 401 时由 daemon 注入的续期回调;成功返回 true */
-	reauth: () => Promise<boolean>;
+	reauth: () => Promise<boolean | ReauthResult>;
 }
 
 /** AIHub 账号上的 Key 执行层。pool 请求只确保目标组 Key,不改变全局路由。 */
@@ -134,11 +136,16 @@ export class RouteExecutor {
 			return await fn();
 		} catch (err) {
 			if (err instanceof AIHubApiError && err.status === 401) {
-				const ok = await this.deps.reauth();
+				const result = await this.deps.reauth();
+				const ok = typeof result === "boolean" ? result : result.ok;
+				const identityVerified =
+					typeof result !== "boolean" &&
+					result.accountIdentityVerified === true;
 				if (
 					ok &&
 					(!expectedAccountIdentity ||
-						this.currentAccountIdentity() === expectedAccountIdentity)
+						(identityVerified &&
+							this.currentAccountIdentity() === expectedAccountIdentity))
 				)
 					return await fn();
 			}

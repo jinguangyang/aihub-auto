@@ -412,7 +412,7 @@ describe("executor 模式 pool", () => {
 		for (const [keyId, status, code] of [
 			[801, 410, "gone"],
 			[802, 400, "key_not_found"],
-			[803, 400, "account_not_found"],
+			[803, 400, "not_found"],
 		] as const) {
 			h.mock.keys.set(keyId, {
 				id: keyId,

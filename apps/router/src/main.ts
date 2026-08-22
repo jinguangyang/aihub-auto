@@ -22,7 +22,7 @@ import {
 	loadAccounts,
 } from "./accounts.ts";
 import { RouteDaemon } from "./daemon.ts";
-import { RouteExecutor } from "./executor.ts";
+import { RouteExecutor, type ReauthResult } from "./executor.ts";
 import { AuditLog, CrashLog, Logger, RollingFileLog } from "./logger.ts";
 import {
 	createOutboundFetch,
@@ -187,10 +187,10 @@ async function main(): Promise<void> {
 		}
 		syncSentryUser(undefined);
 	};
-	const refreshSentryIdentity = async () => {
+	const refreshSentryIdentity = async (): Promise<boolean> => {
 		if (!credentials.accessToken) {
 			await clearSentryIdentity();
-			return;
+			return false;
 		}
 		try {
 			const me = await client.me();
@@ -203,12 +203,14 @@ async function main(): Promise<void> {
 			await persistCredentials();
 			await persistState();
 			syncSentryUser(credentials.email);
+			return true;
 		} catch (error) {
 			if (error instanceof AIHubApiError && error.status === 401) {
 				await clearSentryIdentity();
-				return;
+				return false;
 			}
 			syncSentryUser(credentials.email);
+			return false;
 		}
 	};
 	await refreshSentryIdentity();
@@ -238,11 +240,11 @@ async function main(): Promise<void> {
 		},
 		persistState,
 		persistCredentials,
-		reauth: async () => {
+		reauth: async (): Promise<ReauthResult> => {
 			if (!credentials.refreshToken) {
 				daemon.needsReauth = true;
 				await clearSentryIdentity();
-				return false;
+				return { ok: false, accountIdentityVerified: false };
 			}
 			try {
 				const session = await client.refreshSession(credentials.refreshToken);
@@ -250,7 +252,7 @@ async function main(): Promise<void> {
 				credentials.refreshToken = session.refreshToken;
 				credentials.expiresAt = session.expiresAt;
 				await persistCredentials();
-				await refreshSentryIdentity();
+				const accountIdentityVerified = await refreshSentryIdentity();
 				if (ensureActiveProfile(accounts, credentials)) {
 					await persistAccounts().catch((error) =>
 						logger.warn(
@@ -259,12 +261,12 @@ async function main(): Promise<void> {
 					);
 				}
 				logger.info("token 已自动续期");
-				return true;
+				return { ok: true, accountIdentityVerified };
 			} catch {
 				await clearSentryIdentity();
 				daemon.needsReauth = true;
 				logger.error("token 续期失败,请重新登录(控制台)");
-				return false;
+				return { ok: false, accountIdentityVerified: false };
 			}
 		},
 	});

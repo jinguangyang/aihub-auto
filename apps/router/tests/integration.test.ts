@@ -1136,12 +1136,15 @@ describe("控制台 API", () => {
 			lastErrorCode: "upstream",
 		};
 		h.config.outboundProxyMode = "custom";
-		h.config.outboundProxyUrl = "http://proxy-user:proxy-secret@proxy:7890";
+		h.config.outboundProxyUrl =
+			"http://proxy-user:proxy-secret@proxy:7890/private?secret=foo#frag";
 		const statusRes = await fetch(`${base}/ctl/status`);
 		const statusText = await statusRes.text();
 		expect(statusText).not.toContain("sk-mock");
 		expect(statusText).not.toContain("proxy-user");
 		expect(statusText).not.toContain("proxy-secret");
+		expect(statusText).not.toContain("/private");
+		expect(statusText).not.toContain("?secret=");
 		expect(statusText).not.toMatch(/"sk"\s*:/);
 		const status = JSON.parse(statusText) as {
 			currentGroupId: number;

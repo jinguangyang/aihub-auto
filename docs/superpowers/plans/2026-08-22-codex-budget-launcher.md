@@ -1,6 +1,6 @@
 ﻿# Codex Budget Launcher Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Create a user-level PowerShell command that launches one-shot Codex tasks with explicit low/normal/heavy context profiles and guards against accidental oversized prompts.
 
@@ -28,11 +28,11 @@
 - Consumes: positional arguments `<fast|normal|heavy> <task>` and the existing `codex` command on PATH.
 - Produces: validated invocation of `codex [--profile PROFILE] exec -- TASK` with Codex's exit code.
 
-- [ ] **Step 1: Write a test harness using a temporary fake `codex.cmd`.**
+- [x] **Step 1: Write a test harness using a temporary fake `codex.cmd`.**
 
   Assert blank/oversized/unknown inputs are rejected, each mode forwards the expected arguments, and native exit code `7` is preserved.
 
-- [ ] **Step 2: Run the test and verify RED.**
+- [x] **Step 2: Run the test and verify RED.**
 
   Run:
 
@@ -42,11 +42,11 @@
 
   Expected: FAIL because `codex-budget.ps1` does not exist.
 
-- [ ] **Step 3: Implement the minimal launcher.**
+- [x] **Step 3: Implement the minimal launcher.**
 
   Use a 12,000-character limit, fixed display metadata for the existing profile settings, `Get-Command codex`, and splatted argument arrays. Do not log task text.
 
-- [ ] **Step 4: Run the test and verify GREEN.**
+- [x] **Step 4: Run the test and verify GREEN.**
 
   Expected: all validation, forwarding, and exit-code tests pass.
 
@@ -59,14 +59,22 @@
 - Consumes: all command-line arguments.
 - Produces: a child `powershell.exe` invocation of the launcher with unchanged exit code.
 
-- [ ] **Step 1: Add the command shim.**
+- [x] **Step 1: Add the command shim.**
 
   Resolve the launcher relative to `%USERPROFILE%` and forward `%*` using `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`.
 
-- [ ] **Step 2: Verify parsing and discovery without an API request.**
+- [x] **Step 2: Verify parsing and discovery without an API request.**
 
   Run the complete test harness, `Get-Command codex-budget`, and a rejected blank-task invocation. Expected: tests pass, command resolves from `.local\bin`, and blank task exits before Codex starts.
 
-- [ ] **Step 3: Record usage.**
+- [x] **Step 3: Record usage.**
 
   Report the three command forms and backup/rollback instructions; do not modify the PowerShell profile.
+
+## Implementation Results
+
+- Installed `C:\Users\Administrator\.codex\tools\codex-budget.ps1` and its isolated test harness.
+- Installed the PATH shim at `C:\Users\Administrator\.local\bin\codex-budget.cmd`.
+- Observed the required RED failure before implementation because the launcher did not exist.
+- Fresh verification passed for blank/unknown/oversized rejection, all three profile mappings, native exit-code propagation, PowerShell parsing, PATH discovery, configuration consistency, and privacy scanning.
+- Verification used a fake local `codex.cmd`; no model API request or token spend was generated.
